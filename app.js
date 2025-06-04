@@ -404,6 +404,16 @@ async function handleCreateAccount(event) {
     // disable submit button
     const submitButton = document.querySelector('#createAccountForm button[type="submit"]');
     submitButton.disabled = true;
+    // disable input fields, back button, and toggle button
+    const toggleButton = document.getElementById('togglePrivateKeyInput');
+    const usernameInput = document.getElementById('newUsername');
+    const privateKeyInput = document.getElementById('newPrivateKey');
+    const backButton = document.getElementById('closeCreateAccountModal');
+    
+    toggleButton.disabled = true;
+    usernameInput.disabled = true;
+    privateKeyInput.disabled = true;
+    backButton.disabled = true;
 
     event.preventDefault();
     const username = normalizeUsername(document.getElementById('newUsername').value)
@@ -431,6 +441,12 @@ async function handleCreateAccount(event) {
             privateKeyError.textContent = validation.message;
             privateKeyError.style.color = '#dc3545';
             privateKeyError.style.display = 'inline';
+            // Re-enable controls on validation failure
+            submitButton.disabled = false;
+            toggleButton.disabled = false;
+            usernameInput.disabled = false;
+            privateKeyInput.disabled = false;
+            backButton.disabled = false;
             return;
         }
 
@@ -501,6 +517,12 @@ async function handleCreateAccount(event) {
                 privateKeyError.textContent = 'An account already exists for this private key.';
                 privateKeyError.style.color = '#dc3545';
                 privateKeyError.style.display = 'inline';
+                // Re-enable controls when account already exists
+                submitButton.disabled = false;
+                toggleButton.disabled = false;
+                usernameInput.disabled = false;
+                privateKeyInput.disabled = false;
+                backButton.disabled = false;
                 return; // Stop the account creation process
             } else {
                  console.log('No existing account found for this private key.');
@@ -511,6 +533,12 @@ async function handleCreateAccount(event) {
             privateKeyError.textContent = 'Network error checking key. Please try again.';
             privateKeyError.style.color = '#dc3545';
             privateKeyError.style.display = 'inline';
+            // Re-enable controls on network error
+            submitButton.disabled = false;
+            toggleButton.disabled = false;
+            usernameInput.disabled = false;
+            privateKeyInput.disabled = false;
+            backButton.disabled = false;
             return; // Stop process on error
         }
     }
@@ -528,11 +556,26 @@ async function handleCreateAccount(event) {
             pqSeed: pqSeed,  // store only the 64 byte seed instead of 32,000 byte public and secret keys
         }
     };
-
-    // Create new data entry
-    myData = newDataRecord(myAccount);
     let waitingToastId = showToast('Creating account...', 0, 'loading');
-    const res = await postRegisterAlias(username, myAccount.keys);
+    let res;
+    // Create new data entry
+    try {
+        await getNetworkParams();
+        myData = newDataRecord(myAccount);
+        res = await postRegisterAlias(username, myAccount.keys);
+    } catch (error) {
+        submitButton.disabled = false;
+        toggleButton.disabled = false;
+        usernameInput.disabled = false;
+        privateKeyInput.disabled = false;
+        backButton.disabled = false;
+        if (waitingToastId) hideToast(waitingToastId);
+        showToast(`Failed to fetch network parameters, try again later.`, 0, 'error');
+        console.error('Failed to fetch network parameters, using defaults:', error);
+        return;
+    }
+    
+    
 
     if (res && res.result && res.result.success && res.txid) {
         const txid = res.txid;
@@ -555,6 +598,10 @@ async function handleCreateAccount(event) {
             if (waitingToastId) hideToast(waitingToastId);
             showToast('Account created successfully!', 3000, 'success');
             submitButton.disabled = false;
+            toggleButton.disabled = false;
+            usernameInput.disabled = false;
+            privateKeyInput.disabled = false;
+            backButton.disabled = false;
             closeCreateAccountModal();
             document.getElementById('welcomeScreen').style.display = 'none';
             getChats.lastCall = getCorrectedTimestamp();
@@ -569,6 +616,10 @@ async function handleCreateAccount(event) {
             console.log(`DEBUG: handleCreateAccount error`, JSON.stringify(error, null, 2));
             showToast(`account creation failed: ${error}`, 0, 'error');
             submitButton.disabled = false;
+            toggleButton.disabled = false;
+            usernameInput.disabled = false;
+            privateKeyInput.disabled = false;
+            backButton.disabled = false;
 
             // Clear intervals
             if (updateWebSocketIndicatorIntervalId) {
@@ -599,6 +650,10 @@ async function handleCreateAccount(event) {
 
         // no toast here since injectTx will show it
         submitButton.disabled = false;
+        toggleButton.disabled = false;
+        usernameInput.disabled = false;
+        privateKeyInput.disabled = false;
+        backButton.disabled = false;
         return;
     }
 }
@@ -711,7 +766,8 @@ function newDataRecord(myAccount){
         },
         settings: {
             encrypt: true,
-            toll: 0n
+            toll: parameters?.current?.defaultToll || 1n * wei,
+            tollUnit: parameters?.current?.defaultTollUnit || "LIB",
         }
     }
 
@@ -823,17 +879,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     restoreAccountModal.load()
 
     // Validator Modals
-    document.getElementById('openValidator').addEventListener('click', openValidatorModal);
-    document.getElementById('closeValidatorModal').addEventListener('click', closeValidatorModal);
-    document.getElementById('openStakeModal').addEventListener('click', openStakeModal);
-    document.getElementById('submitUnstake').addEventListener('click', confirmAndUnstakeCurrentUserNominee);
+    validatorStakingModal.load()
 
     // Toll Modal
     tollModal.load()
 
     // Stake Modal
-    document.getElementById('closeStakeModal').addEventListener('click', closeStakeModal);
-    document.getElementById('stakeForm').addEventListener('submit', handleStakeSubmit); // Function to be implemented
+    stakeValidatorModal.load()
 
     // Export Form Modal
     backupAccountModal.load()
@@ -847,26 +899,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Invite Modal
     inviteModal.load()
 
-    // TODO add comment about which send form this is for chat or assets
-    document.getElementById('openSendModal').addEventListener('click', openSendModal);
-    document.getElementById('closeSendModal').addEventListener('click', closeSendModal);
-    document.getElementById('sendForm').addEventListener('submit', handleSendFormSubmit);
+    // Chat Modal
+    chatModal.load()
+
+    // Failed Message Modal
+    failedMessageModal.load()
+
+    // New Chat Modal
+    newChatModal.load()
+
+    // Send Modal
+    sendModal.load()
 
     // Add event listeners for send confirmation modal
     document.getElementById('closeSendConfirmationModal').addEventListener('click', closeSendConfirmationModal);
     document.getElementById('confirmSendButton').addEventListener('click', handleSendAsset);
     document.getElementById('cancelSendButton').addEventListener('click', closeSendConfirmationModal);
-
-    document.getElementById('sendAsset').addEventListener('change', () => {
-        // updateSendAddresses();
-        updateAvailableBalance();
-    });
-    document.getElementById('availableBalance').addEventListener('click', fillAmount);
-    // amount input listener for real-time balance validation
-    document.getElementById('sendAmount').addEventListener('input', updateAvailableBalance);
-
-    // Add blur event listener for recipient validation
-    // document.getElementById('sendToAddress').addEventListener('blur', handleSendToAddressValidation);
 
     document.getElementById('openReceiveModal').addEventListener('click', openReceiveModal);
     document.getElementById('closeReceiveModal').addEventListener('click', closeReceiveModal);
@@ -887,12 +935,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('switchToWallet').addEventListener('click', () => switchView('wallet'));
 
     document.getElementById('handleSignOut').addEventListener('click', handleSignOut);
-    document.getElementById('closeChatModal').addEventListener('click', closeChatModal);
     document.getElementById('closeContactInfoModal').addEventListener('click', () => contactInfoModal.close());
-    document.getElementById('handleSendMessage').addEventListener('click', handleSendMessage);
 
-    // add event listener for tab key
-    document.getElementById('handleSendMessage').addEventListener('keydown', ignoreTabKey);
     // add event listener for back-button presses to prevent shift+tab
     document.querySelectorAll('.back-button').forEach(button => {
         button.addEventListener('keydown', ignoreShiftTabKey);
@@ -906,39 +950,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         item.addEventListener('keydown', ignoreShiftTabKey);
     });
 
-    // Add message click-to-copy handler
-    document.querySelector('.messages-list')?.addEventListener('click', handleClickToCopy);
-
     // Add refresh balance button handler
     document.getElementById('refreshBalance').addEventListener('click', async () => {
         // await updateWalletBalances();
         updateWalletView();
-    });
-
-    // New Chat functionality
-    document.getElementById('newChatButton').addEventListener('click', openNewChatModal);
-    document.getElementById('closeNewChatModal').addEventListener('click', closeNewChatModal);
-    document.getElementById('newChatForm').addEventListener('submit', handleNewChat);
-
-    // Add input event listener for message textarea auto-resize
-    document.querySelector('.message-input')?.addEventListener('input', function() {
-        this.style.height = '48px';
-        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-    });
-
-    // Add focus event listener for message input to handle scrolling
-    document.querySelector('.message-input')?.addEventListener('focus', function() {
-        const messagesContainer = document.querySelector('.messages-container');
-        if (messagesContainer) {
-            // Check if we're already at the bottom (within 50px threshold)
-            const isAtBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight <= 50;
-            if (isAtBottom) {
-                // Wait for keyboard to appear and viewport to adjust
-                setTimeout(() => {
-                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                }, 300); // Increased delay to ensure keyboard is fully shown
-            }
-        }
     });
 
     // Add new search functionality
@@ -968,10 +983,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             displaySearchResults(results);
         }
     }, 300));
-
-    document.getElementById('closeChatModal')?.addEventListener('click', () => {
-        document.getElementById('chatModal').classList.remove('active');
-    });
 
     // Handle message search input
     document.getElementById('messageSearch').addEventListener('input', (e) => {
@@ -1048,15 +1059,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('contactInfoSendButton').addEventListener('click', () => {
         const contactUsername = document.getElementById('contactInfoUsername');
         if (contactUsername) {
-            openSendModal.username = contactUsername.textContent;
+            sendModal.username = contactUsername.textContent;
         }
-        openSendModal();
+        sendModal.open();
     });
 
     document.getElementById('chatSendMoneyButton').addEventListener('click', (event) => {
         const button = event.currentTarget;
-        openSendModal.username = button.dataset.username;
-        openSendModal();
+        sendModal.username = button.dataset.username;
+        sendModal.open();
     });
 
     // Add listener for the password visibility toggle
@@ -1072,9 +1083,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         this.classList.toggle('toggled-visible');
     });
 
-    // add listner for username input, debounce
-    document.getElementById('chatRecipient').addEventListener('input', debounce(handleUsernameInput, 300));
-
     // add listener for username select change on sign in modal
     document.getElementById('username').addEventListener('change', handleUsernameOnSignInModal);
 
@@ -1083,42 +1091,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // create account button listener to clear message input on create account
     document.getElementById('newUsername').addEventListener('input', handleCreateAccountInput);
-
-    // handle openSendModal sendToAddress username input change
-    document.getElementById('sendToAddress').addEventListener('input', (e) => {
-        handleOpenSendModalInput(e);
-    });
-
-    const debounceValidateStakeInputs = debounce(validateStakeInputs, 300);
-    // Add input listeners for stake modal validation
-    document.getElementById('stakeNodeAddress').addEventListener('input', debounceValidateStakeInputs);
-    document.getElementById('stakeAmount').addEventListener('input', debounceValidateStakeInputs);
-
-    // Add custom validation message for minimum amount
-    const sendAmountInput = document.getElementById('sendAmount');
-    sendAmountInput.addEventListener('invalid', (event) => {
-        if (event.target.validity.rangeUnderflow) {
-            event.target.setCustomValidity('Value must be at least 1 wei (1×10⁻¹⁸ LIB).');
-        }
-    });
-    sendAmountInput.addEventListener('input', (event) => {
-        // Clear custom validity message when user types
-        event.target.setCustomValidity('');
-    });
-
-
-    // Event Listeners for FailedMessageModal (using named functions)
-    const failedMessageModal = document.getElementById('failedMessageModal');
-    const failedMessageRetryButton = failedMessageModal.querySelector('.retry-button');
-    const failedMessageDeleteButton = failedMessageModal.querySelector('.delete-button');
-    const failedMessageHeaderCloseButton = document.getElementById('closeFailedMessageModal');
-
-
-    failedMessageRetryButton.addEventListener('click', handleFailedMessageRetry);
-    failedMessageDeleteButton.addEventListener('click', handleFailedMessageDelete);
-    failedMessageHeaderCloseButton.addEventListener('click', closeFailedMessageModalAndClearState);
-    failedMessageModal.addEventListener('click', handleFailedMessageBackdropClick);
-
 
     // Event Listerns for FailedPaymentModal
     const failedPaymentModal = document.getElementById('failedPaymentModal');
@@ -1130,9 +1102,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     failedPaymentDeleteButton.addEventListener('click', handleFailedPaymentDelete);
     failedPaymentHeaderCloseButton.addEventListener('click', closeFailedPaymentModalAndClearState);
     failedPaymentModal.addEventListener('click', handleFailedPaymentBackdropClick);
-
-    // add event listener for toggle LIB/USD button
-    document.getElementById('toggleBalance').addEventListener('click', handleToggleBalance);
 
     getNetworkParams();
 
@@ -1181,6 +1150,10 @@ console.log('stop back button')
 // This is for installed apps where we can't stop the back button; just save the state
 async function handleVisibilityChange(e) {
     console.log('in handleVisibilityChange', document.visibilityState);
+    if (!myAccount) {
+        return;
+    }
+
     if (document.visibilityState === 'hidden') {
         saveState();
         if (handleSignOut.exit) {
@@ -1487,7 +1460,7 @@ async function updateChatList() {
         `;
 
         // Add the onclick handler directly to the element
-        li.onclick = () => openChatModal(chat.address);
+        li.onclick = () => chatModal.open(chat.address);
 
         return li; // Return the created DOM element
     }));
@@ -1684,9 +1657,7 @@ async function switchView(view) {
 
 // Update contacts list UI
 async function updateContactsList() {
-
     const contactsList = document.getElementById('contactsList');
-//            const chatsData = myData
     const contacts = myData.contacts;
 
     if (Object.keys(contacts).length === 0) {
@@ -1702,76 +1673,77 @@ async function updateContactsList() {
     // Convert contacts object to array and sort
     const contactsArray = Object.values(contacts);
 
-    // Split into friends and others in a single pass
-    const { friends, others } = contactsArray.reduce((acc, contact) => {
-        const key = contact.friend ? 'friends' : 'others';
-        acc[key].push(contact);
+    // Split into status groups in a single pass
+    const statusGroups = contactsArray.reduce((acc, contact) => {
+        // 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
+        switch (contact.friend) {
+            case 0:
+                acc.blocked.push(contact);
+                break;
+            case 2:
+                acc.acquaintances.push(contact);
+                break;
+            case 3:
+                acc.friends.push(contact);
+                break;
+            default:
+                acc.others.push(contact);
+        }
         return acc;
-    }, { friends: [], others: [] });
+    }, { others: [], acquaintances: [], friends: [], blocked: []});
 
-    // Sort friends and others by name first, then by username if name is not available
+    // Sort each group by name first, then by username if name is not available
     const sortByName = (a, b) => {
         const nameA = a.name || a.username || '';
         const nameB = b.name || b.username || '';
         return nameA.localeCompare(nameB);
     };
+    Object.values(statusGroups).forEach(group => group.sort(sortByName));
 
-    // sort friends and others
-    friends.sort(sortByName);
-    others.sort(sortByName);
+    // Group metadata for rendering
+    const groupMeta = [
+        { key: 'friends', label: 'Friends', itemClass: 'chat-item' },
+        { key: 'acquaintances', label: 'Acquaintances', itemClass: 'chat-item' },
+        { key: 'others', label: 'Others', itemClass: 'chat-item' },
+        { key: 'blocked', label: 'Blocked', itemClass: 'chat-item blocked' }
+    ];
 
-    // Build HTML for both sections
+    // Helper to render a contact item
+    const renderContactItem = async (contact, itemClass) => {
+        const identicon = await generateIdenticon(contact.address);
+        return `
+            <li class="${itemClass}">
+                <div class="chat-avatar">${identicon}</div>
+                <div class="chat-content">
+                    <div class="chat-header">
+                        <div class="chat-name">${contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`}</div>
+                    </div>
+                    <div class="contact-list-info">
+                        ${contact.email || contact.x || contact.phone || `${contact.address.slice(0,8)}…${contact.address.slice(-6)}`}
+                    </div>
+                </div>
+            </li>
+        `;
+    };
+
+    // Build HTML for all sections
     let html = '';
-
-    // Add friends section if there are friends
-    if (friends.length > 0) {
-        html += `<div class="contact-section-header">Friends</div>`;
-        const friendItems = await Promise.all(friends.map(async contact => {
-            const identicon = await generateIdenticon(contact.address);
-            return `
-                <li class="chat-item">
-                    <div class="chat-avatar">${identicon}</div>
-                    <div class="chat-content">
-                        <div class="chat-header">
-                            <div class="chat-name">${contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`}</div>
-                        </div>
-                        <div class="contact-list-info">
-                            ${contact.email || contact.x || contact.phone || `${contact.address.slice(0,8)}…${contact.address.slice(-6)}`}
-                        </div>
-                    </div>
-                </li>
-            `;
-        }));
-        html += friendItems.join('');
-    }
-
-    // Add others section if there are other contacts
-    if (others.length > 0) {
-        html += `<div class="contact-section-header">Others</div>`;
-        const otherItems = await Promise.all(others.map(async contact => {
-            const identicon = await generateIdenticon(contact.address);
-            return `
-                <li class="chat-item">
-                    <div class="chat-avatar">${identicon}</div>
-                    <div class="chat-content">
-                        <div class="chat-header">
-                            <div class="chat-name">${contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`}</div>
-                        </div>
-                        <div class="contact-list-info">
-                            ${contact.email || contact.x || contact.phone || `${contact.address.slice(0,8)}…${contact.address.slice(-6)}`}
-                        </div>
-                    </div>
-                </li>
-            `;
-        }));
-        html += otherItems.join('');
+    let allContacts = [];
+    for (const { key, label, itemClass } of groupMeta) {
+        const group = statusGroups[key];
+        if (group.length > 0) {
+            html += `<div class="contact-section-header">${label}</div>`;
+            const items = await Promise.all(group.map(contact => renderContactItem(contact, itemClass)));
+            html += items.join('');
+            allContacts = allContacts.concat(group);
+        }
     }
 
     contactsList.innerHTML = html;
 
     // Add click handlers to contact items
     document.querySelectorAll('#contactsList .chat-item').forEach((item, index) => {
-        const contact = [...friends, ...others][index];
+        const contact = allContacts[index];
         item.onclick = () => {
             contactInfoModal.open(createDisplayInfo(contact));
         };
@@ -1783,196 +1755,6 @@ function toggleMenu() {
 //    document.getElementById('accountModal').classList.remove('active');
 }
 
-
-function openNewChatModal() {
-    const newChatModal = document.getElementById('newChatModal');
-    newChatModal.classList.add('active');
-    document.getElementById('newChatButton').classList.remove('visible');
-
-    const usernameAvailable = document.getElementById('chatRecipientError');
-    const recipientInput = document.getElementById('chatRecipient');
-    const submitButton = document.querySelector('#newChatForm button[type="submit"]');
-    usernameAvailable.style.display = 'none';
-    submitButton.disabled = true;
-
-    // Create the handler function
-    const focusHandler = () => {
-        recipientInput.focus();
-        newChatModal.removeEventListener('transitionend', focusHandler);
-    };
-
-    // Add the event listener
-    newChatModal.addEventListener('transitionend', focusHandler);
-}
-
-let usernameInputCheckTimeout;
-// handler that invokes listener for username input
-function handleUsernameInput(e) {
-
-    const usernameAvailable = document.getElementById('chatRecipientError');
-    const submitButton = document.querySelector('#newChatForm button[type="submit"]');
-    usernameAvailable.style.display = 'none';
-    submitButton.disabled = true;
-
-    const username = normalizeUsername(e.target.value);
-
-    // Clear previous timeout
-    if (usernameInputCheckTimeout) {
-        clearTimeout(usernameInputCheckTimeout);
-    }
-
-    // Check if username is too short
-    if (username.length < 3) {
-        usernameAvailable.textContent = 'too short';
-        usernameAvailable.style.color = '#dc3545';
-        usernameAvailable.style.display = 'inline';
-        return;
-    }
-
-    // Check username availability
-    usernameInputCheckTimeout = setTimeout(async () => {
-        const taken = await checkUsernameAvailability(username, myAccount.keys.address);
-        if (taken == 'taken') {
-            usernameAvailable.textContent = 'found';
-            usernameAvailable.style.color = '#28a745';
-            usernameAvailable.style.display = 'inline';
-            submitButton.disabled = false;
-        } else if ((taken == 'mine') || (taken == 'available')) {
-            usernameAvailable.textContent = 'not found';
-            usernameAvailable.style.color = '#dc3545';
-            usernameAvailable.style.display = 'inline';
-            submitButton.disabled = true;
-        } else {
-            usernameAvailable.textContent = 'network error';
-            usernameAvailable.style.color = '#dc3545';
-            usernameAvailable.style.display = 'inline';
-            submitButton.disabled = true;
-        }
-    }, 1000);
-}
-
-function closeNewChatModal() {
-    document.getElementById('newChatModal').classList.remove('active');
-    document.getElementById('newChatForm').reset();
-    if (document.getElementById('chatsScreen').classList.contains('active')) {
-        document.getElementById('newChatButton').classList.add('visible');
-    }
-    if (document.getElementById('contactsScreen').classList.contains('active')) {
-        document.getElementById('newChatButton').classList.add('visible');
-    }
-}
-
-// Show error message in the new chat form
-function showRecipientError(message) {
-    const errorElement = document.getElementById('chatRecipientError');
-    errorElement.textContent = message;
-    errorElement.style.color = '#dc3545';  // Always red for errors
-    errorElement.style.display = 'inline';
-}
-
-// Validate recipient in send modal
-async function handleSendToAddressValidation(e) {
-    const input = e.target.value.trim();
-    const errorElement = document.getElementById('sendToAddressError');
-
-    // Clear previous error
-    errorElement.style.display = 'none';
-
-    if (!input) return;
-
-    // Check if input is an Ethereum address
-    if (input.startsWith('0x')) {
-        if (!isValidEthereumAddress(input)) {
-            errorElement.textContent = 'Invalid address format';
-            errorElement.style.color = '#dc3545';
-            errorElement.style.display = 'inline';
-        }
-        return;
-    }
-
-    // If not an address, treat as username
-    if (input.length < 3) {
-        errorElement.textContent = 'Username too short';
-        errorElement.style.color = '#dc3545';
-        errorElement.style.display = 'inline';
-        return;
-    }
-
-    // Check username availability on network
-    const taken = await checkUsernameAvailability(input);
-    if (taken === 'taken') {
-        errorElement.textContent = 'found';
-        errorElement.style.color = '#28a745';
-        errorElement.style.display = 'inline';
-    } else if (taken === 'available') {
-        errorElement.textContent = 'not found';
-        errorElement.style.color = '#dc3545';
-        errorElement.style.display = 'inline';
-    } else {
-        errorElement.textContent = 'network error';
-        errorElement.style.color = '#dc3545';
-        errorElement.style.display = 'inline';
-    }
-}
-
-// Hide error message in the new chat form
-function hideRecipientError() {
-    const errorElement = document.getElementById('chatRecipientError');
-    errorElement.style.display = 'none';
-}
-
-async function handleNewChat(event) {
-    event.preventDefault();
-    const input = document.getElementById('chatRecipient').value.trim();
-    let recipientAddress;
-    let username;
-
-    hideRecipientError();
-
-    // Check if input is an Ethereum address
-    if (input.startsWith('0x')) {
-        if (!isValidEthereumAddress(input)) {
-            showRecipientError('Invalid Ethereum address format');
-            return;
-        }
-        // Input is valid Ethereum address, normalize it
-        recipientAddress = normalizeAddress(input);
-    } else {
-        if (input.length < 3) {
-            showRecipientError('Username too short');
-            return;
-        }
-        username = normalizeUsername(input)
-        // Treat as username and lookup address
-        const usernameBytes = utf82bin(username);
-        const usernameHash = hashBytes(usernameBytes);
-        try {
-            const data = await queryNetwork(`/address/${usernameHash}`)
-            if (!data || !data.address) {
-                showRecipientError('Username not found');
-                return;
-            }
-            // Normalize address from API if it has 0x prefix or trailing zeros
-            recipientAddress = normalizeAddress(data.address);
-        } catch (error) {
-            console.log('Error looking up username:', error);
-            showRecipientError('Error looking up username');
-            return;
-        }
-    }
-
-    // Get or create chat data
-    const chatsData = myData
-
-    // Check if contact exists
-    if (!chatsData.contacts[recipientAddress]) { createNewContact(recipientAddress) }
-    chatsData.contacts[recipientAddress].username = username
-
-    // Close new chat modal and open chat modal
-    closeNewChatModal();
-    openChatModal(recipientAddress);
-}
-
 // create new contact
 function createNewContact(addr, username){
     const address = normalizeAddress(addr)
@@ -1981,114 +1763,56 @@ function createNewContact(addr, username){
     c.address = address
     if (username){ c.username = normalizeUsername(username) }
     c.messages = []
-    c.timestamp = getCorrectedTimestamp()
+    c.timestamp = 0
     c.unread = 0
     c.toll = 0n
+    c.tollRequiredToReceive = 1
+    c.tollRequiredToSend = 1
+    c.friend = 1
 }
-
-/**
- * Opens the chat modal for the given address.
- * @param {string} address - The address of the contact to open the chat modal for.
- * @returns {void}
- */
-async function openChatModal(address) {
-    const modal = document.getElementById('chatModal');
-    const modalAvatar = modal.querySelector('.modal-avatar');
-    const modalTitle = modal.querySelector('.modal-title');
-    const messagesList = modal.querySelector('.messages-list');
-    const editButton = document.getElementById('chatEditButton');
-    document.getElementById('newChatButton').classList.remove('visible');
-    const contact = myData.contacts[address]
-    // Set user info
-    modalTitle.textContent = contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`;
-
-    // set the address data attribute
-    modal.dataset.address = address;
-
-    // update the toll value. Will not await this and it'll update the toll value while the modal is open.
-    updateTollValue(address);
-
-    // update local contact object with the toll required to send and receive
-    updateTollRequired(address);
-
-    // clear hidden txid input
-    document.getElementById('retryOfTxId').value = '';
-
-    updateTollAmountUI(address);
-
-    // Add data attributes to store the username and address
-    const sendMoneyButton = document.getElementById('chatSendMoneyButton');
-    sendMoneyButton.dataset.username = contact.username || address;
-
-    generateIdenticon(contact.address, 40).then(identicon => {
-        modalAvatar.innerHTML = identicon;
-    });
-
-    // Clear previous messages from the UI
-    messagesList.innerHTML = '';
-
-    // Scroll to bottom (initial scroll for empty list, appendChatModal will scroll later)
-    setTimeout(() => {
-        messagesList.parentElement.scrollTop = messagesList.parentElement.scrollHeight;
-    }, 100);
-
-    // Add click handler for username to show contact info
-    const userInfo = modal.querySelector('.chat-user-info');
-    userInfo.onclick = () => {
-        const contact = myData.contacts[address];
-        if (contact) {
-            contactInfoModal.open(createDisplayInfo(contact));
-        }
-    };
-
-    // Add click handler for edit button
-    editButton.onclick = () => {
-        const contact = myData.contacts[address];
-        if (contact) {
-            contactInfoModal.open(createDisplayInfo(contact));
-        }
-    };
-
-    // query for the contact account data to retrieve the contact's fee
-    const contactAccountData = await queryNetwork(`/account/${longAddress(address)}`);
-    openChatModal.toll = contactAccountData?.account?.data?.toll; // type bigint
-    //console.log(`DEBUG: openChatModal.fee: ${JSON.stringify(big2str(openChatModal.fee * wei, 18), null, 2)}`);
-
-    // Show modal
-    modal.classList.add('active');
-
-    // Clear unread count
-    if (contact.unread > 0) {
-        myData.state.unread = Math.max(0, (myData.state.unread || 0) - contact.unread);
-        contact.unread = 0;
-        updateChatList();
-    }
-
-    // Setup state for appendChatModal and perform initial render
-    appendChatModal.address = address
-    appendChatModal(false); // Call appendChatModal to render messages, ensure highlight=false
-
-    if (isOnline) {
-        if (wsManager && !wsManager.isSubscribed()) {
-            pollChatInterval(pollIntervalChatting) // poll for messages at a faster rate
-        }
-    }
-}
-openChatModal.toll = null;
 
 /**
  * updateTollAmountUI 
  */
 function updateTollAmountUI(address) {
     const tollValue = document.getElementById('tollValue');
-    const contact = myData.contacts[address]
-    const tollValueString = big2str(contact.toll || 0n, 6)
-
-    if (contact.tollRequiredToSend == 1) {
-        tollValue.textContent = tollValueString + ' LIB';
+    tollValue.style.color = 'black';
+    const contact = myData.contacts[address];
+    let toll = contact.toll || 0n;
+    const tollUnit = contact.tollUnit || 'LIB';
+    const decimals = 18;
+    const mainIsUSD = tollUnit === 'USD';
+    const mainValue = parseFloat(big2str(toll, decimals));
+    // Conversion factor (USD/LIB)
+    const scaleMul = parameters.current.stabilityScaleMul || 1;
+    const scaleDiv = parameters.current.stabilityScaleDiv || 1;
+    const factor = scaleDiv !== 0 ? scaleMul / scaleDiv : 1;
+    let mainString, otherString;
+    if (mainIsUSD) {
+        toll = bigxnum2big(toll, (1.0/factor).toString())
+        mainString = mainValue.toFixed(4) + ' USD';
+        const libValue = mainValue / factor;
+        otherString = libValue.toFixed(6) + ' LIB';
     } else {
-        tollValue.textContent = `free (${tollValueString} LIB)`;
+        mainString = mainValue.toFixed(6) + ' LIB';
+        const usdValue = mainValue * factor;
+        otherString = usdValue.toFixed(4) + ' USD';
     }
+    let display;
+    if (contact.tollRequiredToSend == 1) {
+        display = `${mainString} (${otherString})`;
+    } else if (contact.tollRequiredToSend == 2) {
+        tollValue.style.color = 'red';
+        display = `blocked`;
+    } else {
+        // light green used to show success
+        tollValue.style.color = '#28a745';
+        display = `free (${mainString} (${otherString}))`;
+    }
+    tollValue.textContent = display;
+
+    chatModal.toll = toll
+    chatModal.tollUnit = tollUnit
 }
 
 /**
@@ -2109,20 +1833,20 @@ async function updateTollRequired(address) {
 
     try {
         // query the contact's toll field from the network
-        const contactAccountData = await queryNetwork(`/account/${hash}`);
+        const contactAccountData = await queryNetwork(`/messages/${hash}/toll`);
 
-        if (contactAccountData.account == null) {
-            console.warn(`Contact account data is null for address: ${address}`);
+        if (contactAccountData?.error === "No account with the given chatId") {
+            console.warn(`chatId has not been created yet: ${address}`, contactAccountData.error);
+        } else if (contactAccountData?.error) {
+            console.error(`Error querying toll required for address: ${address}`, contactAccountData.error);
             return;
         }
 
         const localContact = myData.contacts[address]
-        if(contactAccountData.account.type == 'ChatAccount') {
-            localContact.tollRequiredToSend = contactAccountData.account.toll.required[myIndex]
-            localContact.tollRequiredToReceive = contactAccountData.account.toll.required[toIndex]
-        }
+        localContact.tollRequiredToSend = contactAccountData.toll.required[toIndex]
+        localContact.tollRequiredToReceive = contactAccountData.toll.required[myIndex]
 
-        if (document.getElementById('chatModal').classList.contains('active') && document.getElementById('chatModal').dataset.address === address) {
+        if (chatModal.modal.classList.contains('active') && chatModal.address === address) {
             updateTollAmountUI(address);
         }
 
@@ -2142,170 +1866,22 @@ async function updateTollRequired(address) {
 async function updateTollValue(address) {
     // query the contact's toll field from the network
     const contactAccountData = await queryNetwork(`/account/${longAddress(address)}`);
+    const queriedToll = contactAccountData?.account?.data?.toll; // type bigint
+    const queriedTollUnit = contactAccountData?.account?.data?.tollUnit; // type string */
 
-    const queriedToll = contactAccountData?.account?.data?.toll/* ?.value; // type bigint
-    const queriedTollUnit = contactAccountData?.account?.data?.toll?.unit; // type string */
-    // console.log(`type of queriedToll: ${typeof queriedToll}`);
-    // console.log(`queriedToll: ${JSON.stringify(big2str(queriedToll, 18), null, 2)}`);
-    
 
     // update the toll value in the UI if the queried toll value is different from the toll field in localStorage
-    if (myData.contacts[address].toll != queriedToll) {
+    if (myData.contacts[address].toll != queriedToll && myData.contacts[address].tollUnit != queriedTollUnit) {
         myData.contacts[address].toll = queriedToll;
-        const tollValueString = big2str(queriedToll*wei, 18)
-        // console.log(`tollValueString: ${tollValueString}`);
+        myData.contacts[address].tollUnit = queriedTollUnit;
         // if correct modal is open for this address, update the toll value
-        if (document.getElementById('chatModal').classList.contains('active') && document.getElementById('chatModal').dataset.address === address) {
+        if (chatModal.modal.classList.contains('active') && chatModal.address === address) {
             updateTollAmountUI(address);
         }
     } else {
         console.log(`Returning early since queried toll value is the same as the toll field in localStorage`);
         // return early
         return;
-    }
-}
-
-function appendChatModal(highlightNewMessage = false) {
-    const currentAddress = appendChatModal.address; // Use a local constant
-    console.log('appendChatModal running for address:', currentAddress, 'Highlight:', highlightNewMessage);
-    if (!currentAddress) { return; }
-
-    const contact = myData.contacts[currentAddress];
-    if (!contact || !contact.messages) {
-            console.log('No contact or messages found for address:', appendChatModal.address);
-            return;
-    }
-    const messages = contact.messages; // Already sorted descending
-
-    const modal = document.getElementById('chatModal');
-    if (!modal) return;
-    const messagesList = modal.querySelector('.messages-list');
-    if (!messagesList) return;
-
-    // --- 1. Identify the actual newest received message data item ---
-    // Since messages are sorted descending (newest first), the first item with my: false is the newest received.
-    const newestReceivedItem = messages.find(item => !item.my);
-    console.log('appendChatModal: Identified newestReceivedItem data:', newestReceivedItem);
-
-    // 2. Clear the entire list
-    messagesList.innerHTML = '';
-
-    // 3. Iterate backwards through messages (oldest to newest for rendering order)
-    // messages are already sorted descending (newest first) in myData
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const item = messages[i];
-        let messageHTML = '';
-        const timeString = formatTime(item.timestamp);
-        // Use a consistent timestamp attribute for potential future use (e.g., message jumping)
-        const timestampAttribute = `data-message-timestamp="${item.timestamp}"`;
-        // Add txid attribute if available
-        const txidAttribute = item?.txid ? `data-txid="${item.txid}"` : '';
-        const statusAttribute = item?.status ? `data-status="${item.status}"` : '';
-
-        // Check if it's a payment based on the presence of the amount property (BigInt)
-        if (typeof item.amount === 'bigint') {
-            // Define common payment variables
-            const itemAmount = item.amount;
-            const itemMemo = item.message; // Memo is stored in the 'message' field for transfers
-
-            // Assuming LIB (18 decimals) for now. TODO: Handle different asset decimals if needed.
-            // Format amount correctly using big2str
-            const amountStr = big2str(itemAmount, 18);
-            const amountDisplay = `${amountStr.slice(0, 6)} ${item.symbol || 'LIB'}`; // Use item.symbol or fallback
-
-            // Check item.my for sent/received
-
-            //console.log(`debug item: ${JSON.stringify(item, (key, value) => typeof value === 'bigint' ? big2str(value, 18) : value)}`)
-            // --- Render Payment Transaction ---
-            const directionText = item.my ? '-' : '+';
-            const messageClass = item.my ? 'sent' : 'received';
-            messageHTML = `
-                <div class="message ${messageClass} payment-info" ${timestampAttribute} ${txidAttribute} ${statusAttribute}>
-                    <div class="payment-header">
-                        <span class="payment-direction">${directionText}</span>
-                        <span class="payment-amount">${amountDisplay}</span>
-                    </div>
-                    ${itemMemo ? `<div class="payment-memo">${linkifyUrls(itemMemo)}</div>` : ''}
-                    <div class="message-time">${timeString}</div>
-                </div>
-            `;
-        } else {
-            // --- Render Chat Message ---
-            const messageClass = item.my ? 'sent' : 'received'; // Use item.my directly
-            messageHTML = `
-                <div class="message ${messageClass}" ${timestampAttribute} ${txidAttribute} ${statusAttribute}>
-                    <div class="message-content" style="white-space: pre-wrap">${linkifyUrls(item.message)}</div>
-                    <div class="message-time">${timeString}</div>
-                </div>
-            `;
-        }
-
-        // 4. Append the constructed HTML
-        // Insert at the end of the list to maintain correct chronological order
-        messagesList.insertAdjacentHTML('beforeend', messageHTML);
-        // The newest received element will be found after the loop completes
-    }
-
-    // --- 5. Find the corresponding DOM element after rendering ---
-    // This happens inside the setTimeout to ensure elements are in the DOM
-
-    // 6. Delayed Scrolling & Highlighting Logic (after loop)
-    setTimeout(() => {
-        const messageContainer = messagesList.parentElement;
-
-        // Find the DOM element for the actual newest received item using its timestamp
-        // Only proceed if newestReceivedItem was found and highlightNewMessage is true
-        if (newestReceivedItem && highlightNewMessage) {
-            const newestReceivedElementDOM = messagesList.querySelector(`[data-message-timestamp="${newestReceivedItem.timestamp}"]`);
-
-            if (newestReceivedElementDOM) {
-                // Found the element, scroll to and highlight it
-                newestReceivedElementDOM.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-                // Apply highlight immediately
-                newestReceivedElementDOM.classList.add('highlighted');
-
-                // Set timeout to remove the highlight after a duration
-                setTimeout(() => {
-                     // Check if element still exists before removing class
-                     if (newestReceivedElementDOM && newestReceivedElementDOM.parentNode) {
-                        newestReceivedElementDOM.classList.remove('highlighted');
-                     }
-                }, 3000);
-            } else {
-                 console.warn('appendChatModal: Could not find DOM element for newestReceivedItem with timestamp:', newestReceivedItem.timestamp);
-                 // If element not found, just scroll to bottom
-                 if (messageContainer) {
-                    messageContainer.scrollTop = messageContainer.scrollHeight;
-                 }
-            }
-
-        } else {
-            // No received messages found, not highlighting, or highlightNewMessage is false,
-            // just scroll to the bottom if the container exists.
-            if (messageContainer) {
-                messageContainer.scrollTop = messageContainer.scrollHeight;
-            }
-        }
-    }, 300); // <<< Delay of 300 milliseconds for rendering
-}
-appendChatModal.address = null
-
-function closeChatModal() {
-    document.getElementById('chatModal').classList.remove('active');
-    if (document.getElementById('chatsScreen').classList.contains('active')) {
-        updateChatList()
-        document.getElementById('newChatButton').classList.add('visible');
-    }
-    if (document.getElementById('contactsScreen').classList.contains('active')) {
-        updateContactsList()
-        document.getElementById('newChatButton').classList.add('visible');
-    }
-    appendChatModal.address = null
-    if (isOnline) {
-        if (wsManager && !wsManager.isSubscribed()) {
-            pollChatInterval(pollIntervalNormal) // back to polling at slower rate
-        }
     }
 }
 
@@ -2539,159 +2115,6 @@ async function copyAddress() {
     }
 }
 
-async function openSendModal() {
-    const modal = document.getElementById('sendModal');
-    modal.classList.add('active');
-
-    // Clear fields when opening the modal
-    document.getElementById('sendToAddress').value = '';
-    document.getElementById('sendAmount').value = '';
-    document.getElementById('sendMemo').value = '';
-    document.getElementById('retryOfPaymentTxId').value = '';
-
-    const usernameAvailable = document.getElementById('sendToAddressError');
-    const submitButton = document.querySelector('#sendForm button[type="submit"]');
-    usernameAvailable.style.display = 'none';
-    submitButton.disabled = true;
-    openQRScanModal.fill = fillPaymentFromQR  // set function to handle filling the payment form from QR data
-
-    /* This is now done in the DOMContentLoaded funtion
-        // Add QR code scan button handler
-        const scanButton = document.getElementById('scanQRButton');
-        // Remove any existing event listeners first
-        const newScanButton = scanButton.cloneNode(true);
-        scanButton.parentNode.replaceChild(newScanButton, scanButton);
-        newScanButton.addEventListener('click', scanQRCode);
-        console.log("Added click event listener to scan QR button");
-    */
-
-    if (openSendModal.username) {
-        const usernameInput = document.getElementById('sendToAddress');
-        usernameInput.value = openSendModal.username;
-        setTimeout(() => {
-            usernameInput.dispatchEvent(new Event('input'));
-        }, 500);
-        openSendModal.username = null
-    }
-
-
-    await updateWalletBalances(); // Refresh wallet balances first
-    // Get wallet data
-    const wallet = myData.wallet
-    // Populate assets dropdown
-    const assetSelect = document.getElementById('sendAsset');
-    assetSelect.innerHTML = wallet.assets.map((asset, index) =>
-        `<option value="${index}">${asset.name} (${asset.symbol})</option>`
-    ).join('');
-
-
-    // Update addresses for first asset
-    updateSendAddresses();
-}
-
-openSendModal.username = null
-
-/*
-* This function is called when the user clicks the toggle LIB/USD button.
-* Updates the balance symbol and the send amount to the equivalent value in USD/LIB
-*/
-async function handleToggleBalance(e) {
-    e.preventDefault();
-    const balanceSymbol = document.getElementById('balanceSymbol');
-    balanceSymbol.textContent = balanceSymbol.textContent === 'LIB' ? 'USD' : 'LIB';
-    const sendAmount = document.getElementById('sendAmount');
-    const balanceAmount = document.getElementById('balanceAmount');
-    const transactionFee = document.getElementById('transactionFee');
-
-    // check the context value of the button to determine if it's LIB or USD
-    const isLib = balanceSymbol.textContent === 'LIB';
-
-    // get the current price of LIB in USD
-    const marketPrice = await getMarketPrice();
-
-    // if isLib is false, convert the sendAmount to USD
-    if (!isLib) {
-        sendAmount.value = (sendAmount.value * marketPrice);
-        balanceAmount.textContent = (balanceAmount.textContent * marketPrice);
-        transactionFee.textContent = (transactionFee.textContent * marketPrice);
-    } else {
-        sendAmount.value = (sendAmount.value / marketPrice);
-        balanceAmount.textContent = (balanceAmount.textContent / marketPrice);
-        transactionFee.textContent = (transactionFee.textContent / marketPrice);
-    }
-}
-
-let sendModalCheckTimeout;
-
-// New function to refresh the disabled state of the send button
-async function refreshSendButtonDisabledState() {
-    const sendToAddressError = document.getElementById('sendToAddressError');
-    // Address is valid if its error/status message is visible and set to 'found'.
-    const isAddressConsideredValid = sendToAddressError.style.display === 'inline' && sendToAddressError.textContent === 'found';
-    console.log(`isAddressConsideredValid ${isAddressConsideredValid}`);
-
-    const amountInput = document.getElementById('sendAmount');
-    const amount = amountInput.value;
-    const assetIndex = document.getElementById('sendAsset').value;
-    const balanceWarning = document.getElementById('balanceWarning');
-
-    // validateBalance returns false if the amount/balance is invalid.
-    const isAmountAndBalanceValid = await validateBalance(amount, assetIndex, balanceWarning);
-
-    const submitButton = document.querySelector('#sendForm button[type="submit"]');
-
-    // Enable button only if both conditions are met.
-    if (isAddressConsideredValid && isAmountAndBalanceValid) {
-        submitButton.disabled = false;
-    } else {
-        submitButton.disabled = true;
-    }
-}
-
-async function handleOpenSendModalInput(e){
-    // Check availability on input changes
-    const username = normalizeUsername(e.target.value);
-    const usernameAvailable = document.getElementById('sendToAddressError');
-
-
-    // Clear previous timeout
-    if (sendModalCheckTimeout) {
-        clearTimeout(sendModalCheckTimeout);
-    }
-
-    // Check if username is too short
-    if (username.length < 3) {
-        usernameAvailable.textContent = 'too short';
-        usernameAvailable.style.color = '#dc3545';
-        usernameAvailable.style.display = 'inline';
-        await refreshSendButtonDisabledState();
-        return;
-    }
-
-    // Check network availability
-    sendModalCheckTimeout = setTimeout(async () => {
-        const taken = await checkUsernameAvailability(username, myAccount.keys.address);
-        if (taken == 'taken') {
-            usernameAvailable.textContent = 'found';
-            usernameAvailable.style.color = '#28a745';
-            usernameAvailable.style.display = 'inline';
-        } else if((taken == 'mine')) {
-            usernameAvailable.textContent = 'mine';
-            usernameAvailable.style.color = '#dc3545';
-            usernameAvailable.style.display = 'inline';
-        } else if ((taken == 'available')) {
-            usernameAvailable.textContent = 'not found';
-            usernameAvailable.style.color = '#dc3545';
-            usernameAvailable.style.display = 'inline';
-        } else {
-            usernameAvailable.textContent = 'network error';
-            usernameAvailable.style.color = '#dc3545';
-            usernameAvailable.style.display = 'inline';
-        }
-        await refreshSendButtonDisabledState(); // Update button state based on new address status and current amount status
-    }, 1000);
-}
-
 // Function to handle QR code scanning Omar
 function openQRScanModal() {
     const modal = document.getElementById('qrScanModal');
@@ -2774,69 +2197,20 @@ function fillStakeAddressFromQR(data) {
     }
 }
 
-async function closeSendModal() {
-    await updateChatList()
-    document.getElementById('sendModal').classList.remove('active');
-    document.getElementById('sendForm').reset();
-    openSendModal.username = null
-}
-
-function updateSendAddresses() {
-    const walletData = myData.wallet
-    const assetIndex = document.getElementById('sendAsset').value;
-//    const addressSelect = document.getElementById('sendFromAddress');
-
-    // Check if we have any assets
-    if (!walletData.assets || walletData.assets.length === 0) {
-        addressSelect.innerHTML = '<option value="">No addresses available</option>';
-        updateAvailableBalance();
-        return;
-    }
-
-    // Update available balance display
-    updateAvailableBalance();
-}
-
-async function updateAvailableBalance() {
-    const walletData = myData.wallet;
-    const assetIndex = document.getElementById('sendAsset').value;
-    const balanceWarning = document.getElementById('balanceWarning');
-
-    // Check if we have any assets
-    if (!walletData.assets || walletData.assets.length === 0) {
-        updateBalanceDisplay(null);
-        // If no assets, amount validation will likely fail or be irrelevant.
-        // Button state should reflect this.
-        await refreshSendButtonDisabledState();
-        return;
-    }
-
-    updateBalanceDisplay(walletData.assets[assetIndex]);
-    await refreshSendButtonDisabledState();
-}
-
-async function updateBalanceDisplay(asset) {
-    if (!asset) {
-        document.getElementById('balanceAmount').textContent = '0.0000';
-        document.getElementById('balanceSymbol').textContent = '';
-        document.getElementById('transactionFee').textContent = '0.00';
-        return;
-    }
-
-    await getNetworkParams();
-    const txFeeInLIB = ((parameters.current.transactionFee) || 1n * wei);
-
-    document.getElementById('balanceAmount').textContent = big2str(BigInt(asset.balance), 18).slice(0, -12);
-    document.getElementById('balanceSymbol').textContent = asset.symbol;
-    document.getElementById('transactionFee').textContent = big2str(txFeeInLIB, 18).slice(0, -16);
-}
-
-
-async function validateBalance(amount, assetIndex, balanceWarning = null) {
+/**
+ * Validate the balance of the user
+ * @param {BigInt} amount - The amount to validate
+ * @param {number} assetIndex - The index of the asset to validate
+ * @param {HTMLElement} balanceWarning - The element to display the balance warning
+ * @returns {Promise<boolean>} - A promise that resolves to true if the balance is sufficient, false otherwise
+ */
+async function validateBalance(amount, assetIndex = 0, balanceWarning = null) {
     if (!amount) {
         if (balanceWarning) balanceWarning.style.display = 'none';
+        console.warn('[validateBalance] amount is 0')
         return false;
     } else if (amount < 0) {
+        console.warn('[validateBalance] amount is negative')
         if (balanceWarning) balanceWarning.style.display = 'inline';
         balanceWarning.textContent = 'Amount cannot be negative';
         return false;
@@ -2845,8 +2219,8 @@ async function validateBalance(amount, assetIndex, balanceWarning = null) {
 
     await getNetworkParams();
     const asset = myData.wallet.assets[assetIndex];
-    const feeInWei = (parameters.current.transactionFee || 1n);
-    const totalRequired = bigxnum2big(wei, amount.toString()) + feeInWei;
+    const feeInWei = (parameters.current.transactionFee || 1n * wei);
+    const totalRequired = bigxnum2big(1n, amount.toString()) + feeInWei;
     const hasInsufficientBalance = BigInt(asset.balance) < totalRequired;
 
     if (balanceWarning) {
@@ -2862,19 +2236,13 @@ async function validateBalance(amount, assetIndex, balanceWarning = null) {
     return !hasInsufficientBalance;
 }
 
-
-async function fillAmount() {
-    await getNetworkParams();
-    const asset = myData.wallet.assets[document.getElementById('sendAsset').value];
-    const feeInWei = (parameters.current.transactionFee || 1n);
-    const maxAmount = BigInt(asset.balance) - feeInWei;
-
-    document.getElementById('sendAmount').value = big2str(maxAmount > 0n ? maxAmount : 0n, 18).slice(0, -16);
-    document.getElementById('sendAmount').dispatchEvent(new Event('input'));
-}
-
 // The user has filled out the form to send assets to a recipient and clicked the Send button
 // The recipient account may not exist in myData.contacts and might have to be created
+/**
+ * Handle the send asset event
+ * @param {Event} event - The event object
+ * @returns {Promise<void>}- A promise that resolves when the send asset event is handled
+ */
 async function handleSendAsset(event) {
     event.preventDefault();
     const confirmButton = document.getElementById('confirmSendButton');
@@ -2905,9 +2273,9 @@ async function handleSendAsset(event) {
     let toAddress;
 
     // Validate amount including transaction fee
-    if (await validateBalance(amount, assetIndex)) {
+    if (!await validateBalance(amount, assetIndex)) {
         await getNetworkParams();
-        const txFeeInLIB = (parameters.current.transactionFee || 1n);
+        const txFeeInLIB = (parameters.current.transactionFee || 1n * wei);
         const balance = BigInt(wallet.assets[assetIndex].balance);
         const amountStr = big2str(amount, 18).slice(0, -16);
         const feeStr = big2str(txFeeInLIB, 18).slice(0, -16);
@@ -2951,31 +2319,43 @@ async function handleSendAsset(event) {
     // Get recipient's public key from contacts
     let recipientPubKey = myData.contacts[toAddress]?.public;
     let pqRecPubKey = myData.contacts[toAddress]?.pqPublic
+    let pqEncSharedKey = ''
     if (!recipientPubKey || !pqRecPubKey) {
         const recipientInfo = await queryNetwork(`/account/${longAddress(toAddress)}`)
         if (!recipientInfo?.account?.publicKey){
             console.log(`no public key found for recipient ${toAddress}`)
             return
         }
-        recipientPubKey = recipientInfo.account.publicKey
-        myData.contacts[toAddress].public = recipientPubKey
-        pqRecPubKey = recipientInfo.account.pqPublicKey
-        myData.contacts[toAddress].pqPublic = pqRecPubKey
+        if (recipientInfo.account.publicKey) {  
+            recipientPubKey = recipientInfo.account.publicKey
+            myData.contacts[toAddress].public = recipientPubKey
+        }
+        if (recipientInfo.account.pqPublicKey) {
+            pqRecPubKey = recipientInfo.account.pqPublicKey
+            myData.contacts[toAddress].pqPublic = pqRecPubKey
+        }
+    }
+    let dhkey = ''
+    let sharedKeyMethod = 'none'
+    if (recipientPubKey){
+        dhkey = ecSharedKey(keys.secret, recipientPubKey)
+        sharedKeyMethod = 'ec'
+        if (pqRecPubKey) {
+            // Generate shared secret using ECDH and take first 32 bytes
+            const  { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey)
+            const combined = new Uint8Array(dhkey.length + sharedSecret.length)
+            combined.set(dhkey)
+            combined.set(sharedSecret, dhkey.length)
+            dhkey = deriveDhKey(combined);
+            pqEncSharedKey = bin2base64(cipherText)
+            sharedKeyMethod = 'pq'
+        }
     }
 
-    // Generate shared secret using ECDH and take first 32 bytes
-    let dhkey = ecSharedKey(keys.secret, recipientPubKey)
-    const  { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey)
-    const combined = new Uint8Array(dhkey.length + sharedSecret.length)
-    combined.set(dhkey)
-    combined.set(sharedSecret, dhkey.length)
-    dhkey = deriveDhKey(combined);
-
-
+    let encMemo = ''
+    if (memo && sharedKeyMethod !== 'none') {
     // We purposely do not encrypt/decrypt using browser native crypto functions; all crypto functions must be readable
     // Encrypt message using shared secret
-    let encMemo = ''
-    if (memo){
         encMemo = encryptChacha(dhkey, memo)
     }
 
@@ -2991,25 +2371,42 @@ async function handleSendAsset(event) {
         document.getElementById('retryOfPaymentTxId').value = '';
     }
 
-    // Create sender info object
-    const senderInfo = {
-        username: myAccount.username,
-        name: myData.account.name,
-        email: myData.account.email,
-        phone: myData.account.phone,
-        linkedin: myData.account.linkedin,
-        x: myData.account.x
-    };
-    // Encrypt sender info
-    const encSenderInfo = encryptChacha(dhkey, stringify(senderInfo));
-
+    // only include the sender info if the recipient is is a friend and has a pqKey
+    let encSenderInfo = ''
+    let senderInfo = ''
+    if (pqRecPubKey && myData.contacts[toAddress]?.friend === 3) {
+        // Create sender info object
+        senderInfo = {
+            username: myAccount.username,
+            name: myData.account.name,
+            email: myData.account.email,
+            phone: myData.account.phone,
+            linkedin: myData.account.linkedin,
+            x: myData.account.x
+        };
+    }
+    else if (recipientPubKey) {
+        senderInfo = {
+            username: myAccount.username
+        }
+    }
+    else {
+        senderInfo = { username: myAccount.address }
+    }
+    if (sharedKeyMethod !== 'none') {
+        encSenderInfo = encryptChacha(dhkey, stringify(senderInfo));
+    }
+    else {
+        encSenderInfo = stringify(senderInfo);
+    }
     // Create message payload
     const payload = {
         message: encMemo,  // we need to call this field message, so we can use decryptMessage()
         senderInfo: encSenderInfo,
         encrypted: true,
         encryptionMethod: 'xchacha20poly1305',
-        pqEncSharedKey: bin2base64(cipherText),
+        pqEncSharedKey: pqEncSharedKey,
+        sharedKeyMethod: sharedKeyMethod,
         sent_timestamp: getCorrectedTimestamp()
     };
 
@@ -3087,14 +2484,13 @@ async function handleSendAsset(event) {
 
         // Update the chat modal to show the newly sent transfer message
         // Check if the chat modal for this recipient is currently active
-        const chatModalActive = document.getElementById('chatModal')?.classList.contains('active');
-        const inActiveChatWithRecipient = appendChatModal.address === toAddress && chatModalActive;
+        const inActiveChatWithRecipient = chatModal.address === toAddress && chatModal.modal.classList.contains('active');
 
         if (inActiveChatWithRecipient) {
-            appendChatModal(); // Re-render the chat modal and highlight the new item
+            chatModal.appendChatModal(); // Re-render the chat modal and highlight the new item
         }
 
-        closeSendModal();
+        sendModal.close();
         closeSendConfirmationModal();
         document.getElementById('sendToAddress').value = '';
         document.getElementById('sendAmount').value = '';
@@ -3131,29 +2527,6 @@ class ContactInfoModalManager {
             this.close();
         });
 
-        // Add friend button
-        document.getElementById('addFriendButton').addEventListener('click', () => {
-            if (!this.currentContactAddress) return;
-
-            const contact = myData.contacts[this.currentContactAddress];
-            if (!contact) return;
-
-            // Toggle friend status
-            contact.friend = !contact.friend;
-
-            // Show appropriate toast message
-            showToast(contact.friend ? 'Added to friends' : 'Removed from friends');
-
-            // Update button appearance
-            this.updateFriendButton(contact.friend);
-
-            // Mark that we need to update the contact list
-            this.needsContactListUpdate = true;
-
-            // Save state
-            saveState();
-        });
-
         document.getElementById('nameEditButton').addEventListener('click', openEditContactModal);
 
         // Add close button handler for edit contact modal
@@ -3166,19 +2539,9 @@ class ContactInfoModalManager {
             const addressToOpen = this.currentContactAddress;
             if (addressToOpen) { // Ensure we have an address before proceeding
                 this.close();
-                openChatModal(addressToOpen);
+                chatModal.open(addressToOpen);
             }
         });
-    }
-
-    // Update friend button text based on current status
-    updateFriendButton(isFriend) {
-        const button = document.getElementById('addFriendButton');
-        if (isFriend) {
-            button.classList.add('removing');
-        } else {
-            button.classList.remove('removing');
-        }
     }
 
     // Update contact info values
@@ -3227,6 +2590,7 @@ class ContactInfoModalManager {
 
     // Open the modal
     async open(displayInfo) {
+        friendModal.setAddress(displayInfo.address);
         this.currentContactAddress = displayInfo.address;
         await this.updateContactInfo(displayInfo);
         this.setupChatButton(displayInfo);
@@ -3234,7 +2598,7 @@ class ContactInfoModalManager {
         // Update friend button status
         const contact = myData.contacts[displayInfo.address];
         if (contact) {
-            this.updateFriendButton(contact.friend || false);
+            friendModal.updateFriendButton(contact, 'addFriendButtonContactInfo');
         }
 
         this.modal.classList.add('active');
@@ -3252,6 +2616,147 @@ class ContactInfoModalManager {
         }
     }
 }
+
+class FriendModal {
+    constructor() {
+        this.modal = document.getElementById('friendModal');
+        this.friendForm = document.getElementById('friendForm');
+        this.currentContactAddress = null;
+        this.needsContactListUpdate = false;  // track if we need to update the contact list
+        this.setupEventListeners();
+    }
+
+    setupEventListeners() {
+        // Add friend button
+        document.getElementById('addFriendButtonContactInfo').addEventListener('click', () => {
+            if (!this.currentContactAddress) return;
+            this.openFriendModal();
+        });
+
+        document.getElementById('addFriendButtonChat').addEventListener('click', () => {
+            if (!this.currentContactAddress) return;
+            this.openFriendModal();
+        });
+
+        // Friend modal form submission
+        this.friendForm.addEventListener('submit', (event) => this.handleFriendSubmit(event));
+
+        // Friend modal close button
+        this.modal.querySelector('.back-button').addEventListener('click', () => this.closeFriendModal());
+    }
+
+    // Open the friend modal
+    openFriendModal() {
+        const contact = myData.contacts[this.currentContactAddress];
+        if (!contact) return;
+        
+        // Set the current friend status
+        const status = contact?.friend.toString();
+        const radio = this.friendForm.querySelector(`input[value="${status}"]`);
+        if (radio) radio.checked = true;
+        
+        this.modal.classList.add('active');
+    }
+
+    // Close the friend modal
+    closeFriendModal() {
+        this.modal.classList.remove('active');
+    }
+
+    async postUpdateTollRequired(address, friend) {
+        // 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
+        // required = 1 if toll required, 0 if not and 2 to block other party
+        const requiredNum = friend === 3 || friend === 2 ? 0 : friend === 1 ? 1 : friend === 0 ? 2 : 1;
+        const fromAddr = longAddress(myAccount.keys.address)
+        const toAddr = longAddress(address)
+        const chatId_ = hashBytes([fromAddr, toAddr].sort().join``)
+        console.log('DEBUG 1:chatId_', chatId_)
+        
+        const tx = {
+            from: fromAddr,
+            to: toAddr,
+            chatId: chatId_,
+            required: requiredNum,
+            type: 'update_toll_required',
+            timestamp: getCorrectedTimestamp(),
+            friend: friend
+        }
+        const txid = await signObj(tx, myAccount.keys)
+        const res = await injectTx(tx, txid)
+        return res
+    }
+
+    /**
+     * Handle friend form submission
+     * 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
+     * @param {Event} event 
+     * @returns {Promise<void>}
+     */
+    async handleFriendSubmit(event) {
+        event.preventDefault();
+        
+        if (!this.currentContactAddress) return;
+        
+        const contact = myData.contacts[this.currentContactAddress];
+        if (!contact) return;
+
+        const selectedStatus = this.friendForm.querySelector('input[name="friendStatus"]:checked')?.value;
+        if (!selectedStatus) return;
+
+        // send transaction to update chat toll
+        const res = await this.postUpdateTollRequired(this.currentContactAddress, Number(selectedStatus))
+        if (res?.transaction?.success === false) {
+            console.log(`[handleFriendSubmit] update_toll_required transaction failed: ${res?.transaction?.reason}. Did not update contact status.`);
+            return;
+        }
+
+        // Update friend status based on selected value
+        contact.friend = Number(selectedStatus);
+
+        // Show appropriate toast message depending value 0,1,2,3
+        showToast(
+            contact.friend === 0 ? 'Blocked' :
+            contact.friend === 1 ? 'Added as Other' :
+            contact.friend === 2 ? 'Added as Acquaintance' :
+            contact.friend === 3 ? 'Added as Friend' :
+            'Error updating friend status'
+        );
+
+        // Mark that we need to update the contact list
+        this.needsContactListUpdate = true;
+
+        // Save state
+        saveState();
+
+        // Update the friend button
+        this.updateFriendButton(contact, 'addFriendButtonContactInfo');
+        this.updateFriendButton(contact, 'addFriendButtonChat');
+
+        // Close the friend modal
+        this.closeFriendModal();
+    }
+
+    // setAddress fuction that sets a global variable that can be used to set the currentContactAddress
+    setAddress(address) {
+        this.currentContactAddress = address;
+    }
+
+    /**
+     * Update the friend button based on the contact's friend status
+     * @param {Object} contact - The contact object
+     * @param {string} buttonId - The ID of the button to update
+     * @returns {void}
+     */
+    updateFriendButton(contact, buttonId) {
+        const button = document.getElementById(buttonId);
+        // Remove all status classes
+        button.classList.remove('status-0', 'status-1', 'status-2', 'status-3');
+        // Add the current status class
+        button.classList.add(`status-${contact.friend}`);
+    }
+}
+
+const friendModal = new FriendModal();
 
 async function openEditContactModal() {
     const editContactModal = document.getElementById('editContactModal');
@@ -3449,295 +2954,12 @@ function handleSignOut() {
 }
 handleSignOut.exit = false
 
-/**
- * Invoked when the user clicks the Send button in a recipient (appendChatModal.address) chat modal
- * Recipient account exists in myData.contacts; was created when the user submitted the New Chat form
- */
-async function handleSendMessage() {
-    const sendButton = document.getElementById('handleSendMessage');
-    sendButton.disabled = true; // Disable the button
-
-    try {
-        const messageInput = document.querySelector('.message-input');
-        messageInput.focus(); // Add focus back to keep keyboard open
-
-        const message = messageInput.value.trim();
-        if (!message) return;
-
-        const modal = document.getElementById('chatModal');
-        //const modalTitle = modal.querySelector('.modal-title');
-        const messagesList = modal.querySelector('.messages-list');
-
-        // Get current chat data
-        const chatsData = myData
-        /*
-        const currentAddress = Object.values(chatsData.contacts).find(contact =>
-            modalTitle.textContent === (contact.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`)
-        )?.address;
-        */
-        const currentAddress = appendChatModal.address
-        if (!currentAddress) return;
-
-        // Check if trying to message self
-        if (currentAddress === myAccount.address) {
-            return;
-        }
-
-        // Get sender's keys from wallet
-        const keys = myAccount.keys;
-        if (!keys) {
-            alert('Keys not found for sender address');
-            return;
-        }
-
-        ///yyy
-        // Get recipient's public key from contacts
-        let recipientPubKey = myData.contacts[currentAddress]?.public;
-        let pqRecPubKey = myData.contacts[currentAddress]?.pqPublic;
-        if (!recipientPubKey || !pqRecPubKey) {
-            const recipientInfo = await queryNetwork(`/account/${longAddress(currentAddress)}`)
-            if (!recipientInfo?.account?.publicKey){
-                console.log(`no public key found for recipient ${currentAddress}`)
-                return
-            }
-            recipientPubKey = recipientInfo.account.publicKey
-            myData.contacts[currentAddress].public = recipientPubKey
-            pqRecPubKey = recipientInfo.account.pqPublicKey
-            myData.contacts[currentAddress].pqPublic = pqRecPubKey
-        }
-
-        // Generate shared secret using ECDH and take first 32 bytes
-        let dhkey = ecSharedKey(keys.secret, recipientPubKey)
-        const { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey)
-        const combined = new Uint8Array(dhkey.length + sharedSecret.length)
-        combined.set(dhkey)
-        combined.set(sharedSecret, dhkey.length)
-        dhkey = deriveDhKey(combined);
-
-        // We purposely do not encrypt/decrypt using browser native crypto functions; all crypto functions must be readable
-        // Encrypt message using shared secret
-        const encMessage = encryptChacha(dhkey, message)
-
-        // Create message payload
-        const payload = {
-            message: encMessage,
-            encrypted: true,
-            encryptionMethod: 'xchacha20poly1305',
-            pqEncSharedKey: bin2base64(cipherText),
-            sent_timestamp: getCorrectedTimestamp()
-        };
-
-        // Always include username, but only include other info if recipient is a friend
-        const contact = myData.contacts[currentAddress];
-        // Create basic sender info with just username
-        const senderInfo = {
-            username: myAccount.username
-        };
-
-        // Add additional info only if recipient is a friend
-        if (contact && contact.friend) {
-            // Add more personal details for friends
-            senderInfo.name = myData.account.name;
-            senderInfo.email = myData.account.email;
-            senderInfo.phone = myData.account.phone;
-            senderInfo.linkedin = myData.account.linkedin;
-            senderInfo.x = myData.account.x;
-        }
-
-        // Always encrypt and send senderInfo (which will contain at least the username)
-        payload.senderInfo = encryptChacha(dhkey, stringify(senderInfo));
-
-
-        // can create a function to query the account and get the receivers toll they've set
-        // TODO: will need to query network and receiver account where we validate
-        // TODO: decided to query everytime we do openChatModal and save as global variable. We don't need to clear it but we can clear it when closing the modal but should get reset when opening the modal again anyway
-        const toll = 1n * wei;
-
-        const chatMessageObj = await createChatMessage(currentAddress, payload, toll, keys);
-        const txid = await signObj(chatMessageObj, keys)
-
-        // if there a hidden txid input, get the value to be used to delete that txid from relevant data stores
-        const retryTxId = document.getElementById('retryOfTxId').value;
-        if (retryTxId) {
-            removeFailedTx(retryTxId, currentAddress);
-            document.getElementById('retryOfTxId').value = '';
-            handleFailedMessageClick.txid = '';
-            handleFailedMessageClick.handleFailedMessage = '';
-        }
-
-        // --- Optimistic UI Update ---
-        // Create new message object for local display immediately
-        const newMessage = {
-            message,
-            timestamp: payload.sent_timestamp,
-            sent_timestamp: payload.sent_timestamp,
-            my: true,
-            txid: txid,
-            status: 'sent'
-        };
-        insertSorted(chatsData.contacts[currentAddress].messages, newMessage, 'timestamp');
-
-        // Update or add to chats list, maintaining chronological order
-        const chatUpdate = {
-            address: currentAddress,
-            timestamp: newMessage.sent_timestamp,
-            txid: txid
-        };
-
-        // Remove existing chat for this contact if it exists. Not handling in removeFailedTx anymore.
-        const existingChatIndex = chatsData.chats.findIndex(chat => chat.address === currentAddress);
-        if (existingChatIndex !== -1) {
-            chatsData.chats.splice(existingChatIndex, 1);
-        }
-
-        insertSorted(chatsData.chats, chatUpdate, 'timestamp');
-
-        // Clear input and reset height
-        messageInput.value = '';
-        messageInput.style.height = '48px'; // original height
-
-        // Update the chat modal UI immediately
-        appendChatModal() // This should now display the 'sending' message
-
-        // Scroll to bottom of chat modal
-        messagesList.parentElement.scrollTop = messagesList.parentElement.scrollHeight;
-        // --- End Optimistic UI Update ---
-
-        //console.log('payload is', payload)
-        // Send the message transaction using createChatMessage with default toll of 1
-        const response = await injectTx(chatMessageObj, txid)
-
-        if (!response || !response.result || !response.result.success) {
-            console.log('message failed to send', response)
-            //let userMessage = 'Message failed to send. Please try again.';
-            //const reason = response.result?.reason || '';
-
-            /* if (reason.includes('does not have sufficient funds')) {
-                userMessage = 'Message failed: Insufficient funds for toll & fees.';
-            } else if (reason) {
-                // Attempt to provide a slightly more specific message if reason is short
-                userMessage = `Message failed: ${reason.substring(0, 100)}${reason.length > 100 ? '...' : ''}`;
-            } */
-            //showToast(userMessage, 4000, 'error');
-
-            // Update message status to 'failed' in the UI
-            updateTransactionStatus(txid, currentAddress, 'failed', 'message');
-            appendChatModal();
-
-            // Remove from pending transactions as injectTx itself indicated failure
-            /* if (myData && myData.pending) {
-                myData.pending = myData.pending.filter(pTx => pTx.txid !== txid);
-            } */
-        } else {
-            // Message sent successfully (or at least accepted by gateway)
-            // The optimistic UI update for 'sent' status is already handled before injectTx.
-            // No specific action needed here for success as the UI already reflects 'sent'.
-        }
-    } catch (error) {
-        console.error('Message error:', error);
-        alert('Failed to send message. Please try again.');
-    } finally {
-        sendButton.disabled = false; // Re-enable the button
-    }
-}
-
-async function handleClickToCopy(e) {
-    const messageEl = e.target.closest('.message');
-    if (!messageEl) return;
-
-    // Prevent copying if the message has failed and not `payment-info`
-    if (messageEl.dataset.status === 'failed') {
-        console.log('Copy prevented for failed message.');
-
-        // If the message is not a payment message, show the failed message modal
-        if (!messageEl.classList.contains('payment-info')) {
-            handleFailedMessageClick(messageEl)
-        }
-
-        // If the message is a payment message, show the failed history item modal
-        if (messageEl.classList.contains('payment-info')) {
-            handleFailedPaymentClick(messageEl.dataset.txid, messageEl)
-        }
-
-        // TODO: if message is a payment open sendModal and fill with information in the payment message?
-
-        return;
-    }
-
-    let textToCopy = null;
-    let contentType = 'Text'; // Default content type for toast
-
-    // Check if it's a payment message
-    if (messageEl.classList.contains('payment-info')) {
-        const paymentMemoEl = messageEl.querySelector('.payment-memo');
-        if (paymentMemoEl) {
-            textToCopy = paymentMemoEl.textContent;
-            contentType = 'Memo'; // Update type for toast
-        } else {
-             // No memo element found in this payment block
-             showToast('No memo to copy', 2000, 'info');
-             return;
-        }
-    } else {
-        // It's a regular chat message
-        const messageContentEl = messageEl.querySelector('.message-content');
-        if (messageContentEl) {
-            textToCopy = messageContentEl.textContent;
-            contentType = 'Message'; // Update type for toast
-        }
-         else {
-             // Should not happen for regular messages, but handle gracefully
-             showToast('No content to copy', 2000, 'info');
-             return;
-         }
-    }
-
-    // Proceed with copying if text was found
-    if (textToCopy && textToCopy.trim()) {
-        try {
-            await navigator.clipboard.writeText(textToCopy.trim());
-            showToast(`${contentType} copied to clipboard`, 2000, 'success');
-        } catch (err) {
-            console.error('Failed to copy:', err);
-            showToast(`Failed to copy ${contentType.toLowerCase()}`, 2000, 'error');
-        }
-    } else if (contentType === 'Memo'){
-        // Explicitly handle the case where memo exists but is empty/whitespace
-        showToast('Memo is empty', 2000, 'info');
-    }
-     // No need for an else here, cases with no element are handled above
-}
-
-/**
- * Invoked when the user clicks on a failed message
- * Will show failed message modal with retry, delete (delete from all data stores), and close buttons
- * It will also store the message content and txid in the handleSendMessage object containing the handleFailedMessage and txid properties
- */
-function handleFailedMessageClick(messageEl) {
-    const modal = document.getElementById('failedMessageModal');
-
-    // Get the message content and txid from the original failed message element
-    const messageContent = messageEl.querySelector('.message-content').textContent;
-    const originalTxid = messageEl.dataset.txid;
-
-    // Store content and txid in properties of handleSendMessage
-    handleFailedMessageClick.handleFailedMessage = messageContent;
-    handleFailedMessageClick.txid = originalTxid;
-
-    // Show the modal
-    if (modal) {
-        modal.classList.add('active');
-    }
-}
-handleFailedMessageClick.handleFailedMessage = '';
-handleFailedMessageClick.txid = '';
-
 function handleFailedPaymentClick(txid, element) {
     console.log('handleFailedPaymentClick', txid)
     const modal = document.getElementById('failedPaymentModal');
 
     // Get the address and memo from the original failed transfer element
-    const address = element?.dataset?.address || appendChatModal?.address;
+    const address = element?.dataset?.address || chatModal.address;
     const memo = element?.querySelector('.transaction-memo')?.textContent || element?.querySelector('.payment-memo')?.textContent;
     //const assetID = element?.dataset?.assetID || ''; // TODO: need to add assetID to `myData.wallet.history` for when we have multiple assets
 
@@ -3761,45 +2983,11 @@ handleFailedPaymentClick.memo = '';
 //handleFailedPaymentClick.assetID = '';
 
 /**
- * Invoked when the user clicks the retry button in the failed message modal
- * It will fill the chat modal with the message content and txid of the failed message and focus the message input
- */
-function handleFailedMessageRetry() {
-    const failedMessageModal = document.getElementById('failedMessageModal');
-    const mainChatInput = document.querySelector('#chatModal .message-input');
-    const retryTxIdInput = document.getElementById('retryOfTxId');
-
-    // Use the values stored when handleFailedMessage was called
-    const messageToRetry = handleFailedMessageClick.handleFailedMessage;
-    const originalTxid = handleFailedMessageClick.txid;
-
-    if (mainChatInput && retryTxIdInput && typeof messageToRetry === 'string' && typeof originalTxid === 'string') {
-        mainChatInput.value = messageToRetry;
-        retryTxIdInput.value = originalTxid;
-
-        if (failedMessageModal) {
-            failedMessageModal.classList.remove('active');
-        }
-        mainChatInput.focus();
-
-        // Clear the stored values after use
-        handleFailedMessageClick.handleFailedMessage = '';
-        handleFailedMessageClick.txid = '';
-    } else {
-        console.error('Error preparing message retry: Necessary elements or data missing.');
-        if (failedMessageModal) {
-            failedMessageModal.classList.remove('active');
-        }
-    }
-}
-
-/**
  * Invoked when the user clicks the retry button in the failed payment modal
  * It will fill the sendModal with the payment content and txid of the failed payment in a hidden input field in the sendModal
  */
 function handleFailedPaymentRetry() {
-    const sendModal = document.getElementById('sendModal');
-    const retryOfPaymentTxId = document.getElementById('retryOfPaymentTxId');
+    const retryOfPaymentTxId = sendModal.retryTxIdInput;
 
     // close the failed payment modal
     const failedPaymentModal = document.getElementById('failedPaymentModal');
@@ -3807,8 +2995,8 @@ function handleFailedPaymentRetry() {
         failedPaymentModal.classList.remove('active');
     }
 
-    if (sendModal && retryOfPaymentTxId) {
-        openSendModal();
+    if (sendModal.modal && retryOfPaymentTxId) {
+        sendModal.open();
 
         // 1. fill in hidden retryOfPaymentTxId input
         retryOfPaymentTxId.value = handleFailedPaymentClick.txid;
@@ -3819,48 +3007,17 @@ function handleFailedPaymentRetry() {
         // 3. fill in the to address input
         // find username in myData.contacts[handleFailedPaymentClick.address].senderInfo.username
         // enter as an input to invoke the oninput event
-        sendModal.querySelector('#sendToAddress').value = myData.contacts[handleFailedPaymentClick.address]?.senderInfo?.username || handleFailedPaymentClick.address || '';
-        sendModal.querySelector('#sendToAddress').dispatchEvent(new Event('input', { bubbles: true }));
+        sendModal.usernameInput.value = myData.contacts[handleFailedPaymentClick.address]?.senderInfo?.username || handleFailedPaymentClick.address || '';
+        sendModal.usernameInput.dispatchEvent(new Event('input', { bubbles: true }));
 
         // 4. fill in the amount input
         // get the amount from myData.wallet.history since we need to the bigint value
         const amount = myData.wallet.history.find(tx => tx.txid === handleFailedPaymentClick.txid)?.amount;
         // convert bigint to string
         const amountStr = big2str(amount, 18);
-        sendModal.querySelector('#sendAmount').value = amountStr;
+        sendModal.amountInput.value = amountStr;
     }
 }
-
-/**
- * Invoked when the user clicks the delete button in the failed message modal
- * It will delete the message from all data stores using removeFailedTx and remove pending tx if exists
- */
-function handleFailedMessageDelete() {
-    const failedMessageModal = document.getElementById('failedMessageModal');
-    const originalTxid = handleFailedMessageClick.txid;
-
-    if (typeof originalTxid === 'string' && originalTxid) {
-        const currentAddress = appendChatModal.address
-        removeFailedTx(originalTxid, currentAddress)
-
-        if (failedMessageModal) {
-            failedMessageModal.classList.remove('active');
-        }
-
-        // Clear the stored values
-        handleFailedMessageClick.handleFailedMessage = '';
-        handleFailedMessageClick.txid = '';
-        // refresh current chatModal
-        appendChatModal();
-    } else {
-        console.error('Error deleting message: TXID not found.');
-        if (failedMessageModal) {
-            failedMessageModal.classList.remove('active');
-        }
-    }
-}
-
-
 
 function handleFailedPaymentDelete() {
     const failedPaymentModal = document.getElementById('failedPaymentModal');
@@ -3875,7 +3032,7 @@ function handleFailedPaymentDelete() {
         }
 
         // refresh current view
-        refreshCurrentView(handleFailedPaymentClick.txid);
+        chatModal.refreshCurrentView(handleFailedPaymentClick.txid);
 
         // Clear the stored values
         handleFailedPaymentClick.txid = '';
@@ -3890,20 +3047,6 @@ function handleFailedPaymentDelete() {
     }
 }
 
-/**
- * Invoked when the user clicks the close button in the failed message modal
- * It will close the modal and clear the stored values
- */
-function closeFailedMessageModalAndClearState() {
-    const failedMessageModal = document.getElementById('failedMessageModal');
-    if (failedMessageModal) {
-        failedMessageModal.classList.remove('active');
-    }
-    // Clear the stored values when modal is closed
-    handleFailedMessageClick.handleFailedMessage = '';
-    handleFailedMessageClick.txid = '';
-}
-
 function closeFailedPaymentModalAndClearState() {
     const failedPaymentModal = document.getElementById('failedPaymentModal');
     if (failedPaymentModal) {
@@ -3914,17 +3057,6 @@ function closeFailedPaymentModalAndClearState() {
     handleFailedPaymentClick.address = '';
     handleFailedPaymentClick.memo = '';
     //handleFailedPaymentClick.assetID = '';
-}
-
-/**
- * Invoked when the user clicks the backdrop in the failed message modal
- * It will close the modal and clear the stored values
- */
-function handleFailedMessageBackdropClick(event) {
-    const failedMessageModal = document.getElementById('failedMessageModal');
-    if (event.target === failedMessageModal) {
-        closeFailedMessageModalAndClearState();
-    }
 }
 
 function handleFailedPaymentBackdropClick(event) {
@@ -4012,11 +3144,6 @@ async function updateAssetPricesIfNeeded() {
 }
 
 function openHistoryModal() {
-    // remove notification from wallet-action-button if it is active
-    if (document.getElementById('openHistoryModal').classList.contains('has-notification')) {
-        document.getElementById('openHistoryModal').classList.remove('has-notification');
-    }
-
     const modal = document.getElementById('historyModal');
     modal.classList.add('active');
 
@@ -4137,7 +3264,7 @@ function handleHistoryItemClick(event) {
         // Check if this is a stake/unstake transaction by looking at the memo
         const memo = item.querySelector('.transaction-memo')?.textContent;
         if (memo === 'stake' || memo === 'unstake') {
-            openValidatorModal();
+            validatorStakingModal.open();
             return;
         }
 
@@ -4152,7 +3279,7 @@ function handleHistoryItemClick(event) {
             // Close the history modal
             closeHistoryModal();
             // Open the chat modal for the corresponding address
-            openChatModal(address);
+            chatModal.open(address);
         }
     }
 }
@@ -4316,8 +3443,8 @@ console.log(`getChats retry ${retry}`)
             }
         }
     }
-    if (appendChatModal.address){   // clear the unread count of address for open chat modal
-        myData.contacts[appendChatModal.address].unread = 0
+    if (chatModal.address){   // clear the unread count of address for open chat modal
+        myData.contacts[chatModal.address].unread = 0
     }
     return chatCount
 }
@@ -4366,7 +3493,7 @@ async function processChats(chats, keys) {
 
             // This check determines if we're currently chatting with the sender
             // We ONLY want to avoid notifications if we're actively viewing this exact chat
-            const inActiveChatWithSender = appendChatModal.address === from &&
+            const inActiveChatWithSender = chatModal.address === from &&
                 document.getElementById('chatModal')?.classList.contains('active'); // Added null check for safety
 
             for (let i in res.messages){
@@ -4526,7 +3653,7 @@ async function processChats(chats, keys) {
                     // is chatModal of sender address is active
                     if (inActiveChatWithSender){
                         // add the transfer tx to the chatModal
-                        appendChatModal(true);
+                        chatModal.appendChatModal(true);
                     }
                 }
             }
@@ -4547,7 +3674,7 @@ async function processChats(chats, keys) {
                 } else {
                     // If chat modal is active, explicitly call appendChatModal to update it
                     // and trigger highlight/scroll for the new message.
-                    appendChatModal(true); // Pass true for highlightNewMessage flag
+                    chatModal.appendChatModal(true); // Pass true for highlightNewMessage flag
                 }
 
                 // Remove existing chat for this contact if it exists
@@ -4642,33 +3769,6 @@ The main difference between a chat message and an asset transfer is
         * However, this does not gaurantee that the recipient has not already downloaded the message and may read it later
 `
 
-/**
- * Create a chat message object
- * @param {string} to - The address of the recipient
- * @param {string} payload - The payload of the message
- * @param {number} toll - The toll of the message
- * @param {Object} keys - The keys of the sender
- * @returns {Object} The chat message object
- */
-async function createChatMessage(to, payload, toll, keys) {
-    const toAddr = longAddress(to);
-    const fromAddr = longAddress(keys.address)
-    await getNetworkParams();
-    const tx = {
-        type: 'message',
-        from: fromAddr,
-        to: toAddr,
-        amount: BigInt(toll),       // not sure if this is used by the backend
-        chatId: hashBytes([fromAddr, toAddr].sort().join``),
-        message: 'x',
-        xmessage: payload,
-        timestamp: getCorrectedTimestamp(),
-        network: NETWORK_ACCOUNT_ID,
-        fee: (parameters.current.transactionFee || 1n)           // This is not used by the backend
-    }
-    return tx
-}
-
 async function postAssetTransfer(to, amount, memo, keys) {
     const toAddr = longAddress(to)
     const fromAddr = longAddress(keys.address)
@@ -4685,7 +3785,7 @@ async function postAssetTransfer(to, amount, memo, keys) {
         xmemo: memo,
         timestamp: getCorrectedTimestamp(),
         network: NETWORK_ACCOUNT_ID,
-        fee: (parameters.current.transactionFee || 1n)           // This is not used by the backend
+        fee: (parameters.current.transactionFee || 1n * wei)           // This is not used by the backend
     }
 
     const txid = await signObj(tx, keys)
@@ -4758,6 +3858,10 @@ async function injectTx(tx, txid){
             if (tx.type === 'register') {
                 pendingTxData.username = tx.alias;
                 pendingTxData.address = tx.from; // User's address (longAddress form)
+            } else if (tx.type === 'update_toll_required') {
+                pendingTxData.friend = tx.friend;
+            } else if (tx.type === 'read') {
+                pendingTxData.oldContactTimestamp = tx.oldContactTimestamp;
             } else if (tx.type === 'message' || tx.type === 'transfer' || tx.type === 'deposit_stake' || tx.type === 'withdraw_stake') {
                 pendingTxData.to = tx.to;
             }
@@ -5078,7 +4182,7 @@ function handleSearchResultClick(result) {
         switchView('chats');
 
         // Open the chat with this contact
-        openChatModal(result.contactAddress);
+        chatModal.open(result.contactAddress);
 
         // Scroll to and highlight the message
         setTimeout(() => {
@@ -6316,50 +5420,6 @@ class WSManager {
 
 let wsManager = new WSManager()        // this is set to new WSManager() for convience
 
-// New functions for send confirmation flow
-async function handleSendFormSubmit(event) {
-    event.preventDefault();
-
-    // Get form values
-    const assetSelect = document.getElementById('sendAsset');
-    const assetSymbol = assetSelect.options[assetSelect.selectedIndex].text;
-    const recipient = document.getElementById('sendToAddress').value;
-    const balanceSymbol = document.getElementById('balanceSymbol');
-    let amount = document.getElementById('sendAmount').value;
-    const memo = document.getElementById('sendMemo').value;
-    const confirmButton = document.getElementById('confirmSendButton');
-    const cancelButton = document.getElementById('cancelSendButton');
-
-    const marketPrice = await getMarketPrice();
-
-    // need to convert to LIB if USD is selected
-    const isLib = balanceSymbol.textContent === 'LIB';
-    if (!isLib) {
-        amount = (amount / marketPrice);
-    }
-
-    // Update confirmation modal with values
-    document.getElementById('confirmRecipient').textContent = recipient;
-    document.getElementById('confirmAmount').textContent = `${amount}`;
-    document.getElementById('confirmAsset').textContent = assetSymbol;
-
-    // Show/hide memo if present
-    const memoGroup = document.getElementById('confirmMemoGroup');
-    if (memo) {
-        document.getElementById('confirmMemo').textContent = memo;
-        memoGroup.style.display = 'block';
-    } else {
-        memoGroup.style.display = 'none';
-    }
-
-    // Hide send modal and show confirmation modal
-    document.getElementById('sendModal').classList.remove('active');
-
-    confirmButton.disabled = false;
-    cancelButton.disabled = false;
-    document.getElementById('sendConfirmationModal').classList.add('active');
-}
-
 function closeSendConfirmationModal() {
     document.getElementById('sendConfirmationModal').classList.remove('active');
     document.getElementById('sendModal').classList.add('active');
@@ -6492,229 +5552,6 @@ function updateWebSocketIndicator() {
 updateWebSocketIndicator.lastSubscribed = 0
 
 // Validator Modals
-async function openValidatorModal() {
-    // Get modal elements
-    const validatorModal = document.getElementById('validatorModal');
-    const loadingElement = document.getElementById('validator-loading');
-    const errorElement = document.getElementById('validator-error-message');
-    const detailsElement = document.getElementById('validator-details');
-    // Get elements needed for conditional logic early
-    const nomineeLabelElement = document.getElementById('validator-nominee-label');
-    const nomineeValueElement = document.getElementById('validator-nominee');
-    const userStakeLibItem = document.getElementById('validator-user-stake-lib-item');
-    const userStakeUsdItem = document.getElementById('validator-user-stake-usd-item');
-    const unstakeButton = document.getElementById('submitUnstake');
-    const stakeButton = document.getElementById('openStakeModal');
-    const pendingSkeletonBar1 = document.getElementById('pending-nominee-skeleton-1');
-    const pendingTxTextInBar = document.getElementById('pending-tx-text-in-bar');
-
-    // Reset UI
-    if (loadingElement) loadingElement.style.display = 'block';
-    if (detailsElement) detailsElement.style.display = 'none';
-    if (errorElement) {
-        errorElement.style.display = 'none';
-        errorElement.textContent = ''; // Clear previous errors
-    }
-    // Reset conditional elements to default state (label text might change later)
-    if (nomineeLabelElement) nomineeLabelElement.textContent = 'Nominated Validator:'; // Default label
-    if (nomineeValueElement) nomineeValueElement.textContent = ''; // Clear value initially
-    // Ensure stake items are visible by default (using flex as defined in styles.css)
-    if (userStakeLibItem) userStakeLibItem.style.display = 'flex';
-    if (userStakeUsdItem) userStakeUsdItem.style.display = 'flex';
-    // Disable unstake button initially while loading/checking
-    if (unstakeButton) unstakeButton.disabled = true;
-    if (stakeButton) stakeButton.disabled = false;
-
-    if (validatorModal) validatorModal.classList.add('active'); // Open modal immediately
-
-    // --- START: New logic for text in skeleton bar ---
-    // Reset elements to default state before checking for pending tx
-    // Pending Transaction UI
-    if (nomineeValueElement) nomineeValueElement.style.display = ''; // Show actual nominee value by default
-    if (pendingTxTextInBar) pendingTxTextInBar.style.display = 'none';
-    if (pendingSkeletonBar1) pendingSkeletonBar1.style.display = 'none';
-
-    let currentPendingTx = null;
-    if (myData && myData.pending && Array.isArray(myData.pending) && myData.pending.length > 0) {
-        currentPendingTx = myData.pending.find(
-            tx => tx.type === 'deposit_stake' || tx.type === 'withdraw_stake'
-        );
-    }
-
-    if (currentPendingTx) {
-        if (detailsElement) detailsElement.style.display = 'block'; // Ensure main section is visible
-        if (pendingSkeletonBar1) pendingSkeletonBar1.style.display = 'flex'; // Use flex to help center text in span
-        if (pendingTxTextInBar) {
-            pendingTxTextInBar.textContent = currentPendingTx.type === 'withdraw_stake' ? 'Pending Unstake Transaction' : 'Pending Stake Transaction';
-            pendingTxTextInBar.style.display = 'block';
-        }
-        if (currentPendingTx.type === 'deposit_stake' && stakeButton) stakeButton.disabled = true;
-    }
-    // --- END: New logic for text in skeleton bar ---
-
-    let nominee = null;
-
-    try {
-        // Fetch Data Concurrently
-        const userAddress = myData?.account?.keys?.address;
-        if (!userAddress) {
-            console.warn("User address not found in myData. Skipping user account fetch.");
-            // Decide how to handle this - maybe show an error or a specific state?
-            // For now, we'll proceed, but nominee/user stake will be unavailable.
-        }
-
-        const [userAccountData, networkAccountData, updatePrices] = await Promise.all([
-            userAddress ? queryNetwork(`/account/${longAddress(userAddress)}`) : Promise.resolve(null), // Fetch User Data if available
-            queryNetwork('/account/0000000000000000000000000000000000000000000000000000000000000000'), // Fetch Network Data
-            updateWalletBalances()
-        ]);
-
-        // Extract Raw Data (API values are now actual BigInt objects or other types)
-        nominee = userAccountData?.account?.operatorAccountInfo?.nominee; // string
-        const userStakedBaseUnits = userAccountData?.account?.operatorAccountInfo?.stake; // BigInt object
-
-        const stakeRequiredUsd = networkAccountData?.account?.current?.stakeRequiredUsd; // BigInt object
-        const stabilityScaleMul = networkAccountData?.account?.current?.stabilityScaleMul; // number
-        const stabilityScaleDiv = networkAccountData?.account?.current?.stabilityScaleDiv; // number
-
-        const marketPrice = await getMarketPrice(); // number or null
-
-        // Calculate Derived Values
-        let stabilityFactor = null;
-        if (stabilityScaleMul != null && stabilityScaleDiv != null && Number(stabilityScaleDiv) !== 0) {
-            stabilityFactor = Number(stabilityScaleMul) / Number(stabilityScaleDiv);
-        }
-
-        let stakeAmountLibBaseUnits = null; // This will be a BigInt object or null
-        if (stakeRequiredUsd != null && typeof stakeRequiredUsd === 'bigint' &&
-            stabilityScaleMul != null && typeof stabilityScaleMul === 'number' &&
-            stabilityScaleDiv != null && typeof stabilityScaleDiv === 'number' && stabilityScaleDiv !== 0) {
-            try {
-                // No need to parse stakeRequiredUsd from string, it's already a BigInt
-                const scaleMulBigInt = BigInt(stabilityScaleMul);
-                const scaleDivBigInt = BigInt(stabilityScaleDiv);
-                if (scaleMulBigInt !== 0n) {
-                    stakeAmountLibBaseUnits = (stakeRequiredUsd * scaleDivBigInt) / scaleMulBigInt;
-                } else {
-                     console.warn("Stability scale multiplier is zero, cannot calculate LIB stake amount.");
-                }
-            } catch (e) {
-                console.error("Error calculating stakeAmountLibBaseUnits with BigInt:", e, {
-                    stakeRequiredUsdBaseUnits,
-                    stabilityScaleMul,
-                    stabilityScaleDiv
-                });
-            }
-        }
-
-        let userStakedUsd = null; // number or null
-        // TODO: Calculate User Staked Amount (USD) using market price - Use stability factor if available?
-        // For now, using market price as implemented previously.
-        if (userStakedBaseUnits != null && typeof userStakedBaseUnits === 'bigint' && marketPrice != null) { // Check it's a BigInt
-            try {
-                // userStakedBaseUnits is already a BigInt object
-                const userStakedLib = Number(userStakedBaseUnits) / 1e18;
-                userStakedUsd = userStakedLib * marketPrice;
-            } catch (e) {
-                console.error("Error calculating userStakedUsd:", e, { userStakedBaseUnits, marketPrice });
-            }
-        }
-
-        let marketStakeUsdBaseUnits = null; // BigInt object or null
-        // Calculate Min Stake at Market (USD) using BigInt and market price
-        if (stakeAmountLibBaseUnits !== null && marketPrice != null) { // stakeAmountLibBaseUnits is BigInt object here
-            try {
-                const stakeAmountLib = Number(stakeAmountLibBaseUnits) / 1e18;
-                const marketStakeUsd = stakeAmountLib * marketPrice;
-                // Approximate back to base units (assuming 18 decimals for USD base units)
-                marketStakeUsdBaseUnits = BigInt(Math.round(marketStakeUsd * 1e18));
-            } catch (e) {
-                console.error("Error calculating marketStakeUsdBaseUnits:", e, { stakeAmountLibBaseUnits, marketPrice });
-            }
-        }
-
-
-        // Format & Update UI
-        // Get references for network info elements
-        const networkStakeUsdValue = document.getElementById('validator-network-stake-usd');
-        const networkStakeLibValue = document.getElementById('validator-network-stake-lib');
-        const stabilityFactorValue = document.getElementById('validator-stability-factor');
-        const marketPriceValue = document.getElementById('validator-market-price');
-        const marketStakeUsdValue = document.getElementById('validator-market-stake-usd');
-        const stakeForm = document.getElementById('stakeForm');
-
-        // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation to big2str.
-        if (stakeForm) stakeForm.dataset.minStake = stakeAmountLibBaseUnits === null ? '0' : big2str(stakeAmountLibBaseUnits, 18);
-
-        // stakeRequiredUsd is a BigInt object or null/undefined. Pass its string representation.
-        const displayNetworkStakeUsd = stakeRequiredUsd != null ? '$' + big2str(stakeRequiredUsd, 18).slice(0, 6) : 'N/A';
-        // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation.
-        const displayNetworkStakeLib = stakeAmountLibBaseUnits !== null ? big2str(stakeAmountLibBaseUnits, 18).slice(0, 7) : 'N/A';
-        const displayStabilityFactor = stabilityFactor ? stabilityFactor.toFixed(4) : 'N/A';
-        const displayMarketPrice = marketPrice ? '$' + marketPrice.toFixed(4) : 'N/A';
-        // marketStakeUsdBaseUnits is a BigInt object or null. Pass its string representation.
-        const displayMarketStakeUsd = marketStakeUsdBaseUnits !== null ? '$' + big2str(marketStakeUsdBaseUnits, 18).slice(0, 6) : 'N/A';
-
-        if (networkStakeUsdValue) networkStakeUsdValue.textContent = displayNetworkStakeUsd;
-        if (networkStakeLibValue) networkStakeLibValue.textContent = displayNetworkStakeLib;
-        if (stabilityFactorValue) stabilityFactorValue.textContent = displayStabilityFactor;
-        if (marketPriceValue) marketPriceValue.textContent = displayMarketPrice;
-        if (marketStakeUsdValue) marketStakeUsdValue.textContent = displayMarketStakeUsd;
-
-        if (!nominee) {
-            if (nomineeLabelElement) nomineeLabelElement.textContent = 'No Nominated Validator';
-            if (nomineeValueElement) nomineeValueElement.textContent = ''; // Ensure value is empty
-            if (userStakeLibItem) userStakeLibItem.style.display = 'none'; // Hide LIB stake item
-            if (userStakeUsdItem) userStakeUsdItem.style.display = 'none'; // Hide USD stake item
-        } else {
-            // Case: Nominee Exists
-            // Get references for user stake values
-             const userStakeLibValue = document.getElementById('validator-user-stake-lib');
-             const userStakeUsdValue = document.getElementById('validator-user-stake-usd');
-
-            // userStakedBaseUnits is a BigInt object or null/undefined. Pass its string representation.
-            const displayUserStakedLib = userStakedBaseUnits != null ? big2str(userStakedBaseUnits, 18).slice(0, 6) : 'N/A';
-            const displayUserStakedUsd = userStakedUsd != null ? '$' + userStakedUsd.toFixed(4) : 'N/A';
-
-            if (nomineeLabelElement) nomineeLabelElement.textContent = 'Nominated Validator:';
-            if (nomineeValueElement) nomineeValueElement.textContent = nominee;
-            if (userStakeLibValue) userStakeLibValue.textContent = displayUserStakedLib;
-            if (userStakeUsdValue) userStakeUsdValue.textContent = displayUserStakedUsd;
-            // Ensure items are visible (using flex as defined in CSS) - redundant due to reset, but safe
-            if (userStakeLibItem) userStakeLibItem.style.display = 'flex';
-            if (userStakeUsdItem) userStakeUsdItem.style.display = 'flex';
-        }
-
-        if (detailsElement) detailsElement.style.display = 'block'; // Or 'flex' if it's a flex container
-
-    } catch (error) {
-        console.error("Error fetching validator details:", error);
-        // Display error in UI
-        if (errorElement) {
-            errorElement.textContent = 'Failed to load validator details. Please try again later.';
-            errorElement.style.display = 'block';
-        }
-        // Ensure details are hidden if an error occurs
-        if (detailsElement) detailsElement.style.display = 'none';
-        // Ensure unstake button remains disabled on error
-        if (unstakeButton) unstakeButton.disabled = true;
-    } finally {
-        // Hide loading indicator regardless of success or failure
-        if (loadingElement) loadingElement.style.display = 'none';
-        // Set final state of unstake button based on whether a nominee was found
-        if (unstakeButton) {
-             unstakeButton.disabled = !nominee;
-        }
-        if (currentPendingTx) {
-            unstakeButton.disabled = true;
-            stakeButton.disabled = true;
-        }
-    }
-}
-
-function closeValidatorModal() {
-    document.getElementById('validatorModal').classList.remove('active');
-}
 
 // fetching market price by invoking `updateAssetPricesIfNeeded` and extracting from myData.assetPrices
 async function getMarketPrice() {
@@ -6752,260 +5589,6 @@ async function getMarketPrice() {
         return null; // Return null on any unexpected error during the process
     }
 }
-
-// Stake Modal
-function openStakeModal() {
-    document.getElementById('stakeModal').classList.add('active');
-
-    // Set the correct fill function for the staking context
-    openQRScanModal.fill = fillStakeAddressFromQR;
-
-    // Display Available Balance
-    const balanceDisplay = document.getElementById('stakeAvailableBalanceDisplay');
-    const libAsset = myData.wallet.assets.find(asset => asset.symbol === 'LIB'); // Assuming LIB is index 0 or find by symbol
-    if (balanceDisplay && libAsset) {
-        // Use big2str for formatting, similar to updateBalanceDisplay but simpler for this context
-        const formattedBalance = big2str(BigInt(libAsset.balance), 18).slice(0, -12); // Show 6 decimal places
-        balanceDisplay.textContent = `Available: ${formattedBalance} ${libAsset.symbol}`;
-    } else if (balanceDisplay) {
-        balanceDisplay.textContent = 'Available: 0.000000 LIB'; // Default if no asset found
-    }
-
-    // if validator-nominee address from validatorModal is not null, fill the stakeNodeAddress input field with the validator-nominee address
-    const stakeNodeAddressInput = document.getElementById('stakeNodeAddress');
-    const nominee = document.getElementById('validator-nominee')?.textContent?.trim();
-    const stakeNodeAddressGroup = document.getElementById('stakeNodeAddressGroup');
-    const isNominee = !!nominee;
-    
-    // if nominee is not null, fill the stakeNodeAddress input field with the nominee address
-    stakeNodeAddressInput.value = isNominee ? nominee : '';
-    // hide the stakeNodeAddressGroup since pre-filled if there is a nominee
-    stakeNodeAddressGroup.style.display = isNominee ? 'none' : 'block';
-    // button submitStake should say "Add Stake" if there is a nominee, otherwise say "Submit Stake"
-    const submitStakeButton = document.getElementById('submitStake');
-    submitStakeButton.textContent = isNominee ? 'Add Stake' : 'Submit Stake';
-
-
-    // fill amount with with the min stake amount
-    const amountInput = document.getElementById('stakeAmount');
-    // get min stake amount from document.getElementById('stakeForm').dataset
-    const minStakeAmountValue = document.getElementById('stakeForm').dataset.minStake;
-    const minStakeAmount = minStakeAmountValue ? minStakeAmountValue : '0'; // Default to 0 if not found
-    if (amountInput && minStakeAmount) amountInput.value = minStakeAmount;
-
-    // Call initial validation
-    validateStakeInputs();
-}
-
-function closeStakeModal() {
-    document.getElementById('stakeModal').classList.remove('active');
-    // TODO: clear input fields
-}
-
-// Check if a validator node is active based on reward times
-async function checkValidatorActivity(validatorAddress) {
-    if (!validatorAddress) {
-        console.error("checkValidatorActivity: No validator address provided.");
-        return { isActive: false, error: "No address provided" }; // Cannot determine activity without address
-    }
-    try {
-        const data = await queryNetwork(`/account/${validatorAddress}`);
-        if (data && data.account) {
-            const account = data.account;
-            // Active if reward has started (not 0) but hasn't ended (is 0)
-            const isActive = account.rewardStartTime && account.rewardStartTime !== 0 && (!account.rewardEndTime || account.rewardEndTime === 0);
-            return { isActive: isActive, error: null };
-        } else {
-            console.warn(`checkValidatorActivity: No account data found for validator ${validatorAddress}.`);
-             return { isActive: false, error: "Could not fetch validator data" };
-        }
-    } catch (error) {
-        console.error(`checkValidatorActivity: Error fetching data for validator ${validatorAddress}:`, error);
-        // Network error or other issue fetching data.
-        return { isActive: false, error: "Network error fetching validator status" };
-    }
-}
-
-// handle Unstake Click with transaction confirmation and submission
-async function confirmAndUnstakeCurrentUserNominee() {
-    // Attempt to read nominee from the DOM element populated by openValidatorModal
-    const nomineeElement = document.getElementById('validator-nominee');
-    const nominee = nomineeElement ? nomineeElement.textContent?.trim() : null;
-
-    // Check if we successfully retrieved a nominee address from the DOM
-    if (!nominee || nominee.length < 10) { // Add a basic sanity check for length
-        showToast('Could not find nominated validator.', 4000, 'error');
-        console.warn("confirmAndUnstakeCurrentUserNominee: Nominee not found or invalid in DOM element #validator-nominee.");
-        return;
-    }
-
-    // Check if the validator is active
-    const activityCheck = await checkValidatorActivity(nominee);
-    if (activityCheck.isActive) {
-        showToast('Cannot unstake from an active validator.', 5000, 'error');
-        console.warn(`confirmAndUnstakeCurrentUserNominee: Validator ${nominee} is active.`);
-        return;
-    } else if (activityCheck.error) {
-        showToast(`Error checking validator status: ${activityCheck.error}`, 5000, 'error');
-        return;
-    }
-
-    // Confirmation dialog
-    const confirmationMessage = `Are you sure you want to unstake from validator: ${nominee}?`;
-    if (window.confirm(confirmationMessage)) {
-        //console.log(`User confirmed unstake from: ${nominee}`);
-        showToast('Submitting unstake transaction...', 3000, 'loading');
-        // Call the function to handle the actual transaction submission
-        await submitUnstakeTransaction(nominee);
-    }
-}
-
-async function submitUnstakeTransaction(nodeAddress) {
-    // disable the unstake button, back button, and submitStake button
-    const unstakeButton = document?.getElementById('submitUnstake');
-    const backButton = document?.getElementById('backButton');
-    const submitStakeButton = document?.getElementById('submitStake');
-    if (unstakeButton) unstakeButton.disabled = true;
-    if (backButton) backButton.disabled = true;
-    if (submitStakeButton) submitStakeButton.disabled = true;
-
-
-    try {
-        const response = await postUnstake(nodeAddress);
-        if (response && response.result && response.result.success) {
-
-            myData.wallet.history.unshift({
-                nominee: nodeAddress,
-                amount: bigxnum2big(wei, '0'),
-                memo: 'unstake',
-                sign: 1,
-                status: 'sent',
-                timestamp: getCorrectedTimestamp(),
-                txid: response.txid
-            });
-
-            closeValidatorModal();
-            openValidatorModal();
-        } else {
-            // Try to get a more specific reason for failure
-            const reason = response?.result?.reason || 'Unknown error from API.';
-            // not showing toast since shown in injectTx
-            console.error('Unstake failed. API Response:', response);
-        }
-    } catch (error) {
-        console.error('Error submitting unstake transaction:', error);
-        // Provide a user-friendly error message
-        showToast('Unstake transaction failed. Network or server error.', 5000, 'error');
-    } finally {
-        if (unstakeButton) unstakeButton.disabled = false;
-        if (backButton) backButton.disabled = false;
-        if (submitStakeButton) submitStakeButton.disabled = false;
-    }
-}
-
-// Stake Form
-async function handleStakeSubmit(event) {
-    event.preventDefault();
-    const stakeButton = document.getElementById('submitStake');
-    stakeButton.disabled = true;
-
-    const nodeAddressInput = document.getElementById('stakeNodeAddress');
-    const amountInput = document.getElementById('stakeAmount');
-
-    const backButton = document.getElementById('backButton');
-    const submitStakeButton = document.getElementById('submitStake');
-
-    const nodeAddress = nodeAddressInput.value.trim();
-    const amountStr = amountInput.value.trim();
-
-    // Basic Validation // TODO: robust validation
-    if (!nodeAddress || !amountStr) {
-        showToast('Please fill in all fields.', 3000, 'error');
-        stakeButton.disabled = false;
-        return;
-    }
-
-    // Validate address format (simple check for now) // TODO: robust validation
-    /* if (!nodeAddress.startsWith('0x') || nodeAddress.length !== 42) {
-        showToast('Invalid validator node address format.', 3000, 'error');
-        stakeButton.disabled = false;
-        return;
-    } */
-
-    let amount_in_wei;
-    try {
-        amount_in_wei = bigxnum2big(wei, amountStr);
-        // TODO: Add balance check if necessary
-    } catch (error) {
-        showToast('Invalid amount entered.', 3000, 'error');
-        stakeButton.disabled = false;
-        return;
-    }
-
-    try {
-        if (backButton) backButton.disabled = true;
-        if (submitStakeButton) submitStakeButton.disabled = true;
-
-        const response = await postStake(nodeAddress, amount_in_wei, myAccount.keys);
-        console.log("Stake Response:", response);
-
-        if (response && response.result && response.result.success) {
-            myData.wallet.history.unshift({
-                nominee: nodeAddress,
-                amount: amount_in_wei,
-                memo: 'stake',
-                sign: -1,
-                status: 'sent',
-                timestamp: getCorrectedTimestamp(),
-                txid: response.txid
-            });
-
-            showToast('Submitted stake transaction...', 3000, 'loading');
-
-            closeValidatorModal();
-            nodeAddressInput.value = ''; // Clear form
-            amountInput.value = '';
-            closeStakeModal();
-            openValidatorModal();
-        }
-    } catch (error) {
-        console.error('Stake transaction error:', error);
-        showToast('Stake transaction failed. See console for details.', 5000, 'error');
-    } finally {
-        if (stakeButton) stakeButton.disabled = false;
-        if (backButton) backButton.disabled = false;
-        if (submitStakeButton) submitStakeButton.disabled = false;
-    }
- }
-
- async function postStake(nodeAddress, amount, keys) {
-    const stakeTx = {
-        type: "deposit_stake",
-        nominator: longAddress(myAccount.keys.address),
-        nominee: nodeAddress,
-        stake: amount,
-        timestamp: getCorrectedTimestamp(),
-    };
-
-    const txid = await signObj(stakeTx, keys)
-    const response = await injectTx(stakeTx, txid);
-    return response;
- }
-
- async function postUnstake(nodeAddress) {
-    // TODO: need to query network for the correct nominator address
-    const unstakeTx = {
-        type: "withdraw_stake",
-        nominator: longAddress(myAccount?.keys?.address),
-        nominee: nodeAddress,
-        force: false,
-        timestamp: getCorrectedTimestamp(),
-    };
-
-    const txid = await signObj(unstakeTx, myAccount.keys)
-    const response = await injectTx(unstakeTx, txid);
-    return response;
- }
 
  class RemoveAccountModal {
     constructor(){
@@ -7817,116 +6400,2053 @@ class MyProfileModal {
 }
 const myProfileModal = new MyProfileModal()
 
-async function validateStakeInputs() {
-    const nodeAddressInput = document.getElementById('stakeNodeAddress');
-    const amountInput = document.getElementById('stakeAmount');
-    const stakeForm = document.getElementById('stakeForm');
-    const amountWarningElement = document.getElementById('stakeAmountWarning'); // Renamed for clarity
-    const nodeAddressWarningElement = document.getElementById('stakeNodeAddressWarning'); // New warning element
-    const submitButton = document.getElementById('submitStake');
+class ValidatorStakingModal {
+    constructor() {
+        // Modal and main buttons
+        this.modal = document.getElementById('validatorModal');
+        this.stakeButton = document.getElementById('openStakeModal');
+        this.unstakeButton = document.getElementById('submitUnstake');
+        this.backButton = document.getElementById('closeValidatorModal');
+        
+        // UI state elements
+        this.detailsElement = document.getElementById('validator-details');
+        this.loadingElement = document.getElementById('validator-loading');
+        this.errorElement = document.getElementById('validator-error-message');
+        
+        // Display elements
+        this.totalStakeElement = document.getElementById('validator-total-stake');
+        this.totalStakeUsdElement = document.getElementById('validator-total-stake-usd');
+        this.userStakeLibElement = document.getElementById('validator-user-stake-lib');
+        this.userStakeUsdElement = document.getElementById('validator-user-stake-usd');
+        this.nomineeLabelElement = document.getElementById('validator-nominee-label');
+        this.nomineeValueElement = document.getElementById('validator-nominee');
 
-    const nodeAddress = nodeAddressInput.value.trim();
-    const amountStr = amountInput.value.trim();
-    const minStakeAmountStr = stakeForm.dataset.minStake || '0';
+        // Skeleton bar elements
+        this.pendingSkeletonBar = document.getElementById('pending-nominee-skeleton-1');
+        this.pendingTxTextInBar = document.getElementById('pending-tx-text-in-bar');
 
-    // Default state: button disabled, warnings hidden
-    submitButton.disabled = true;
-    amountWarningElement.style.display = 'none';
-    amountWarningElement.textContent = '';
-    nodeAddressWarningElement.style.display = 'none'; // Hide address warning too
-    nodeAddressWarningElement.textContent = '';
-
-    // Check 1: Empty Fields
-    if ( !amountStr || !nodeAddress) {
-        // Keep button disabled, no specific warning needed for empty fields yet
-        return;
+        // Network info elements
+        this.networkStakeUsdValue = document.getElementById('validator-network-stake-usd');
+        this.networkStakeLibValue = document.getElementById('validator-network-stake-lib');
+        this.stabilityFactorValue = document.getElementById('validator-stability-factor');
+        this.marketPriceValue = document.getElementById('validator-market-price');
+        this.marketStakeUsdValue = document.getElementById('validator-market-stake-usd');
+        this.stakeForm = document.getElementById('stakeForm');
     }
 
-    // Check 1.5: Node Address Format (64 hex chars)
-    const addressRegex = /^[0-9a-fA-F]{64}$/;
-    if (!addressRegex.test(nodeAddress)) {
-        nodeAddressWarningElement.textContent = 'Invalid node address format (must be 64 hex characters).';
-        nodeAddressWarningElement.style.display = 'block';
-        amountWarningElement.style.display = 'none'; // Hide amount warning if address is bad
-        amountWarningElement.textContent = '';
-        return; // Keep button disabled
-    } else {
-        // Ensure address warning is hidden if format is now valid
-        nodeAddressWarningElement.style.display = 'none';
-        nodeAddressWarningElement.textContent = '';
+    load() {
+        // Setup event listeners when DOM is loaded
+        // stakeButton handling is in the StakeValidatorModal
+        this.unstakeButton.addEventListener('click', () => this.handleUnstake());
+
+        // Add listeners for opening and closing the modal
+        document.getElementById('openValidator').addEventListener('click', () => this.open());
+        this.backButton.addEventListener('click', () => this.close());
     }
 
-    // --- Amount Checks ---
-    let amountWei;
-    let minStakeWei;
-    try {
-        amountWei = bigxnum2big(wei, amountStr);
+    async open() {
+        // Reset UI state
+        this.loadingElement.style.display = 'block';
+        this.detailsElement.style.display = 'none';
+        this.errorElement.style.display = 'none';
+        this.errorElement.textContent = '';
 
-        // if amount is 0 or less, than return
-        if(amountWei <= 0n) {
+        // Reset conditional elements to default state
+        this.nomineeLabelElement.textContent = 'Nominated Validator:';
+        this.nomineeValueElement.textContent = '';
+        // Ensure stake items are visible by default
+        this.userStakeLibElement.style.display = 'flex';
+        this.userStakeUsdElement.style.display = 'flex';
+        // Disable unstake button initially
+        this.unstakeButton.disabled = true;
+        this.stakeButton.disabled = false;
+
+        // Show the modal
+        this.modal.classList.add('active');
+        
+        // logic for text in skeleton bar
+        // Pending Transaction UI
+        this.nomineeValueElement.style.display = ''; // as in the original code
+        this.pendingTxTextInBar.style.display = 'none';
+        this.pendingSkeletonBar.style.display = 'none';
+
+        let currentPendingTx = null;
+        if (myData && myData.pending && Array.isArray(myData.pending) && myData.pending.length > 0) {
+            currentPendingTx = myData.pending.find(
+                tx => tx.type === 'deposit_stake' || tx.type === 'withdraw_stake'
+            );
+        }
+
+        if (currentPendingTx) {
+            this.detailsElement.style.display = 'block';
+            this.pendingSkeletonBar.style.display = 'flex';
+            this.pendingTxTextInBar.textContent = currentPendingTx.type === 'withdraw_stake' ? 'Pending Unstake Transaction' : 'Pending Stake Transaction';
+            this.pendingTxTextInBar.style.display = 'block';
+
+            if (currentPendingTx.type === 'deposit_stake') {
+                this.stakeButton.disabled = true;
+            }
+        }
+        
+        let nominee = null;
+
+        try {
+            // Fetch Data Concurrently
+            const userAddress = myData?.account?.keys?.address;
+            if (!userAddress) {
+                console.warn("User address not found in myData. Skipping user account fetch.");
+                // Decide how to handle this - maybe show an error or a specific state?
+                // For now, we'll proceed, but nominee/user stake will be unavailable.
+            }
+
+            const [userAccountData, networkAccountData, updatePrices] = await Promise.all([
+                userAddress ? queryNetwork(`/account/${longAddress(userAddress)}`) : Promise.resolve(null), // Fetch User Data if available
+                queryNetwork('/account/0000000000000000000000000000000000000000000000000000000000000000'), // Fetch Network Data
+                updateWalletBalances()
+            ]);
+
+            // Extract Raw Data (API values are now actual BigInt objects or other types)
+            nominee = userAccountData?.account?.operatorAccountInfo?.nominee; // string
+            const userStakedBaseUnits = userAccountData?.account?.operatorAccountInfo?.stake; // BigInt object
+
+            const stakeRequiredUsd = networkAccountData?.account?.current?.stakeRequiredUsd; // BigInt object
+            const stabilityScaleMul = networkAccountData?.account?.current?.stabilityScaleMul; // number
+            const stabilityScaleDiv = networkAccountData?.account?.current?.stabilityScaleDiv; // number
+
+            const marketPrice = await getMarketPrice(); // number or null
+
+            // Calculate Derived Values
+            let stabilityFactor = null;
+            if (stabilityScaleMul != null && stabilityScaleDiv != null && Number(stabilityScaleDiv) !== 0) {
+                stabilityFactor = Number(stabilityScaleMul) / Number(stabilityScaleDiv);
+            }
+
+            let stakeAmountLibBaseUnits = null; // This will be a BigInt object or null
+            if (stakeRequiredUsd != null && typeof stakeRequiredUsd === 'bigint' &&
+                stabilityScaleMul != null && typeof stabilityScaleMul === 'number' &&
+                stabilityScaleDiv != null && typeof stabilityScaleDiv === 'number' && stabilityScaleDiv !== 0) {
+                try {
+                    // No need to parse stakeRequiredUsd from string, it's already a BigInt
+                    const scaleMulBigInt = BigInt(stabilityScaleMul);
+                    const scaleDivBigInt = BigInt(stabilityScaleDiv);
+                    if (scaleMulBigInt !== 0n) {
+                        stakeAmountLibBaseUnits = (stakeRequiredUsd * scaleDivBigInt) / scaleMulBigInt;
+                    } else {
+                        console.warn("Stability scale multiplier is zero, cannot calculate LIB stake amount.");
+                    }
+                } catch (e) {
+                    console.error("Error calculating stakeAmountLibBaseUnits with BigInt:", e, {
+                        stakeRequiredUsdBaseUnits,
+                        stabilityScaleMul,
+                        stabilityScaleDiv
+                    });
+                }
+            }
+
+            let userStakedUsd = null; // number or null
+            // TODO: Calculate User Staked Amount (USD) using market price - Use stability factor if available?
+            // For now, using market price as implemented previously.
+            if (userStakedBaseUnits != null && typeof userStakedBaseUnits === 'bigint' && marketPrice != null) { // Check it's a BigInt
+                try {
+                    // userStakedBaseUnits is already a BigInt object
+                    const userStakedLib = Number(userStakedBaseUnits) / 1e18;
+                    userStakedUsd = userStakedLib * marketPrice;
+                } catch (e) {
+                    console.error("Error calculating userStakedUsd:", e, { userStakedBaseUnits, marketPrice });
+                }
+            }
+
+            let marketStakeUsdBaseUnits = null; // BigInt object or null
+            // Calculate Min Stake at Market (USD) using BigInt and market price
+            if (stakeAmountLibBaseUnits !== null && marketPrice != null) { // stakeAmountLibBaseUnits is BigInt object here
+                try {
+                    const stakeAmountLib = Number(stakeAmountLibBaseUnits) / 1e18;
+                    const marketStakeUsd = stakeAmountLib * marketPrice;
+                    // Approximate back to base units (assuming 18 decimals for USD base units)
+                    marketStakeUsdBaseUnits = BigInt(Math.round(marketStakeUsd * 1e18));
+                } catch (e) {
+                    console.error("Error calculating marketStakeUsdBaseUnits:", e, { stakeAmountLibBaseUnits, marketPrice });
+                }
+            }
+
+
+            // Format & Update UI
+
+            // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation to big2str.
+            this.stakeForm.dataset.minStake = stakeAmountLibBaseUnits === null ? '0' : big2str(stakeAmountLibBaseUnits, 18);
+
+            // stakeRequiredUsd is a BigInt object or null/undefined. Pass its string representation.
+            const displayNetworkStakeUsd = stakeRequiredUsd != null ? '$' + big2str(stakeRequiredUsd, 18).slice(0, 6) : 'N/A';
+            // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation.
+            const displayNetworkStakeLib = stakeAmountLibBaseUnits !== null ? big2str(stakeAmountLibBaseUnits, 18).slice(0, 7) : 'N/A';
+            const displayStabilityFactor = stabilityFactor ? stabilityFactor.toFixed(4) : 'N/A';
+            const displayMarketPrice = marketPrice ? '$' + marketPrice.toFixed(4) : 'N/A';
+            // marketStakeUsdBaseUnits is a BigInt object or null. Pass its string representation.
+            const displayMarketStakeUsd = marketStakeUsdBaseUnits !== null ? '$' + big2str(marketStakeUsdBaseUnits, 18).slice(0, 6) : 'N/A';
+
+            this.networkStakeUsdValue.textContent = displayNetworkStakeUsd;
+            this.networkStakeLibValue.textContent = displayNetworkStakeLib;
+            this.stabilityFactorValue.textContent = displayStabilityFactor;
+            this.marketPriceValue.textContent = displayMarketPrice;
+            this.marketStakeUsdValue.textContent = displayMarketStakeUsd;
+
+            if (!nominee) {
+                this.nomineeLabelElement.textContent = 'No Nominated Validator';
+                this.nomineeValueElement.textContent = ''; // Ensure value is empty
+                this.userStakeLibElement.style.display = 'none'; // Hide LIB stake item
+                this.userStakeUsdElement.style.display = 'none'; // Hide USD stake item
+            } else {
+                // Case: Nominee Exists
+
+                // userStakedBaseUnits is a BigInt object or null/undefined. Pass its string representation.
+                const displayUserStakedLib = userStakedBaseUnits != null ? big2str(userStakedBaseUnits, 18).slice(0, 6) : 'N/A';
+                const displayUserStakedUsd = userStakedUsd != null ? '$' + userStakedUsd.toFixed(4) : 'N/A';
+
+                this.nomineeLabelElement.textContent = 'Nominated Validator:';
+                this.nomineeValueElement.textContent = nominee;
+                this.userStakeLibElement.textContent = displayUserStakedLib;
+                this.userStakeUsdElement.textContent = displayUserStakedUsd;
+                // Ensure items are visible (using flex as defined in CSS) - redundant due to reset, but safe
+                this.userStakeLibElement.style.display = 'flex';
+                this.userStakeUsdElement.style.display = 'flex';
+            }
+
+            this.detailsElement.style.display = 'block'; // Or 'flex' if it's a flex container
+
+        } catch (error) {
+            console.error("Error fetching validator details:", error);
+            // Display error in UI
+            this.errorElement.textContent = 'Failed to load validator details. Please try again later.';
+            this.errorElement.style.display = 'block';
+            // Ensure details are hidden if an error occurs
+            this.detailsElement.style.display = 'none';
+            // Ensure unstake button remains disabled on error
+            this.unstakeButton.disabled = true;
+        } finally {
+            // Hide loading indicator regardless of success or failure
+            this.loadingElement.style.display = 'none';
+            // Set final state of unstake button based on whether a nominee was found
+            this.unstakeButton.disabled = !nominee;
+            
+            if (currentPendingTx) {
+                this.unstakeButton.disabled = true;
+                this.stakeButton.disabled = true;
+            }
+        }
+    }
+
+    close() {
+        this.modal.classList.remove('active');
+    }
+
+    async handleUnstake() {
+        // Attempt to read nominee from the DOM element populated by openValidatorModal
+        const nominee = this.nomineeValueElement.textContent.trim();
+
+        // Check if we successfully retrieved a nominee address from the DOM
+        if (!nominee || nominee.length < 10) { // Add a basic sanity check for length
+            showToast('Could not find nominated validator.', 4000, 'error');
+            console.warn("ValidatorStakingModal: Nominee not found or invalid in DOM element #validator-nominee.");
             return;
         }
 
-        // get the account info for the address
-        const address = longAddress(myData?.account?.keys?.address);
-
-        // if the time stamps are more than 30 seconds ago, reset the staked amount and time stamps
-        if(getCorrectedTimestamp() - validateStakeInputs.timeStamps > 30000) {
-            const res = await queryNetwork(`/account/${address}`);
-            validateStakeInputs.stakedAmount = res?.account?.operatorAccountInfo?.stake || 0n;
-            validateStakeInputs.timeStamps = getCorrectedTimestamp();
-            validateStakeInputs.nominee = res?.account?.operatorAccountInfo?.nominee;
+        // Check if the validator is active
+        const activityCheck = await this.checkValidatorActivity(nominee);
+        if (activityCheck.isActive) {
+            showToast('Cannot unstake from an active validator.', 5000, 'error');
+            console.warn(`ValidatorStakingModal: Validator ${nominee} is active.`);
+            return;
+        } else if (activityCheck.error) {
+            showToast(`Error checking validator status: ${activityCheck.error}`, 5000, 'error');
+            return;
         }
 
+        // Confirmation dialog
+        const confirmationMessage = `Are you sure you want to unstake from validator: ${nominee}?`;
+        if (window.confirm(confirmationMessage)) {
+            //console.log(`User confirmed unstake from: ${nominee}`);
+            showToast('Submitting unstake transaction...', 3000, 'loading');
+            // Call the function to handle the actual transaction submission
+            await this.submitUnstakeTransaction(nominee);
+        }
+    }
 
-        const staked = validateStakeInputs.nominee;
+    async submitUnstakeTransaction(nodeAddress) {
+        // disable the unstake button, back button, and submitStake button
+        this.unstakeButton.disabled = true;
+        this.backButton.disabled = true;
+        this.stakeButton.disabled = true;
+    
+        try {
+            const response = await this.postUnstake(nodeAddress);
+            if (response && response.result && response.result.success) {
+    
+                myData.wallet.history.unshift({
+                    nominee: nodeAddress,
+                    amount: bigxnum2big(wei, '0'),
+                    memo: 'unstake',
+                    sign: 1,
+                    status: 'sent',
+                    timestamp: getCorrectedTimestamp(),
+                    txid: response.txid
+                });
+    
+                this.close();
+                this.open();
+            } else {
+                // not showing toast since shown in injectTx
+                console.error('Unstake failed. API Response:', response);
+            }
+        } catch (error) {
+            console.error('Error submitting unstake transaction:', error);
+            // Provide a user-friendly error message
+            showToast('Unstake transaction failed. Network or server error.', 5000, 'error');
+        } finally {
+            this.unstakeButton.disabled = false;
+            this.backButton.disabled = false;
+            this.stakeButton.disabled = false;
+        }
+    }
 
-        minStakeWei = bigxnum2big(wei, minStakeAmountStr);
+    async postUnstake(nodeAddress) {
+        // TODO: need to query network for the correct nominator address
+        const unstakeTx = {
+            type: "withdraw_stake",
+            nominator: longAddress(myAccount?.keys?.address),
+            nominee: nodeAddress,
+            force: false,
+            timestamp: getCorrectedTimestamp(),
+        };
+    
+        const txid = await signObj(unstakeTx, myAccount.keys)
+        const response = await injectTx(unstakeTx, txid);
+        return response;
+     }
+    
 
-        if (staked) {
-            // get the amount they have staked from the account info
-            const stakedAmount = validateStakeInputs.stakedAmount;
+    async checkValidatorActivity(validatorAddress) {
+        if (!validatorAddress) {
+            console.error("ValidatorStakingModal: No validator address provided.");
+            return { isActive: false, error: "No address provided" }; // Cannot determine activity without address
+        }
+        try {
+            const data = await queryNetwork(`/account/${validatorAddress}`);
+            if (data && data.account) {
+                const account = data.account;
+                // Active if reward has started (not 0) but hasn't ended (is 0)
+                const isActive = account.rewardStartTime && account.rewardStartTime !== 0 && (!account.rewardEndTime || account.rewardEndTime === 0);
+                return { isActive: isActive, error: null };
+            } else {
+                console.warn(`ValidatorStakingModal: No account data found for validator ${validatorAddress}.`);
+                return { isActive: false, error: "Could not fetch validator data" };
+            }
+        } catch (error) {
+            console.error(`ValidatorStakingModal: Error fetching data for validator ${validatorAddress}:`, error);
+            // Network error or other issue fetching data.
+            return { isActive: false, error: "Network error fetching validator status" };
+        }
+    }
+}
+const validatorStakingModal = new ValidatorStakingModal()
 
-            // subtract the staked amount from the min stake amount and this will be the new min stake amount
-            minStakeWei = minStakeWei - stakedAmount;
-            // if minStake is less than 0, then set the min stake to 0
-            if(minStakeWei < 0n) {
-                minStakeWei = 0n;
+class StakeValidatorModal {
+    constructor() {
+        this.modal = document.getElementById('stakeModal');
+        this.form = document.getElementById('stakeForm');
+        this.nodeAddressInput = document.getElementById('stakeNodeAddress');
+        this.amountInput = document.getElementById('stakeAmount');
+        this.submitButton = document.getElementById('submitStake');
+        this.backButton = document.getElementById('closeStakeModal');
+        this.nodeAddressGroup = document.getElementById('stakeNodeAddressGroup');
+        this.balanceDisplay = document.getElementById('stakeAvailableBalanceDisplay');
+        this.amountWarning = document.getElementById('stakeAmountWarning');
+        this.nodeAddressWarning = document.getElementById('stakeNodeAddressWarning');
+
+        this.stakedAmount = 0n;
+        this.lastValidationTimestamp = 0;
+        this.hasNominee = false;
+    }
+
+    load() {
+        // Setup event listeners
+        this.form.addEventListener('submit', (event) => this.handleSubmit(event));
+        this.backButton.addEventListener('click', () => this.close());
+
+        this.debouncedValidateStakeInputs = debounce(() => this.validateStakeInputs(), 300);
+
+        this.nodeAddressInput.addEventListener('input', this.debouncedValidateStakeInputs);
+        this.amountInput.addEventListener('input', this.debouncedValidateStakeInputs);
+
+        // Add listener for opening the modal
+        document.getElementById('openStakeModal').addEventListener('click', () => this.open());
+    }
+
+    open() {
+        this.modal.classList.add('active');
+
+        // Set the correct fill function for the staking context
+        openQRScanModal.fill = fillStakeAddressFromQR;
+
+        // Display Available Balance
+        const libAsset = myData.wallet.assets.find(asset => asset.symbol === 'LIB');
+        if (this.balanceDisplay && libAsset) {
+            const formattedBalance = big2str(BigInt(libAsset.balance), 18).slice(0, -12);
+            this.balanceDisplay.textContent = `Available: ${formattedBalance} ${libAsset.symbol}`;
+        } else if (this.balanceDisplay) {
+            this.balanceDisplay.textContent = 'Available: 0.000000 LIB';
+        }
+
+        // Check for nominee address from validator modal
+        const nominee = document.getElementById('validator-nominee')?.textContent?.trim();
+        const isNominee = !!nominee;
+        
+        // Set node address and UI state based on nominee
+        this.nodeAddressInput.value = isNominee ? nominee : '';
+        this.nodeAddressGroup.style.display = isNominee ? 'none' : 'block';
+        this.submitButton.textContent = isNominee ? 'Add Stake' : 'Submit Stake';
+
+        // Set minimum stake amount
+        const minStakeAmount = this.form.dataset.minStake || '0';
+        if (this.amountInput && minStakeAmount) {
+            this.amountInput.value = minStakeAmount;
+        }
+
+        // Call initial validation
+        this.validateStakeInputs();
+    }
+
+    close() {
+        this.modal.classList.remove('active');
+        // TODO: clear input fields
+    }
+
+    async handleSubmit(event) {
+        event.preventDefault();
+        this.submitButton.disabled = true;
+
+        const nodeAddress = this.nodeAddressInput.value.trim();
+        const amountStr = this.amountInput.value.trim();
+
+        // Basic Validation
+        if (!nodeAddress || !amountStr) {
+            showToast('Please fill in all fields.', 3000, 'error');
+            this.submitButton.disabled = false;
+            return;
+        }
+
+        let amount_in_wei;
+        try {
+            amount_in_wei = bigxnum2big(wei, amountStr);
+        } catch (error) {
+            showToast('Invalid amount entered.', 3000, 'error');
+            this.submitButton.disabled = false;
+            return;
+        }
+
+        try {
+            this.backButton.disabled = true;
+
+            const response = await this.postStake(nodeAddress, amount_in_wei, myAccount.keys);
+            console.log("Stake Response:", response);
+
+            if (response && response.result && response.result.success) {
+                myData.wallet.history.unshift({
+                    nominee: nodeAddress,
+                    amount: amount_in_wei,
+                    memo: 'stake',
+                    sign: -1,
+                    status: 'sent',
+                    timestamp: getCorrectedTimestamp(),
+                    txid: response.txid
+                });
+
+                showToast('Submitted stake transaction...', 3000, 'loading');
+
+                validatorStakingModal.close();
+                this.nodeAddressInput.value = ''; // Clear form
+                this.amountInput.value = '';
+                this.close();
+                validatorStakingModal.open();
+            }
+        } catch (error) {
+            console.error('Stake transaction error:', error);
+            showToast('Stake transaction failed. See console for details.', 5000, 'error');
+        } finally {
+            this.submitButton.disabled = false;
+            this.backButton.disabled = false;
+        }
+    }
+
+    async postStake(nodeAddress, amount, keys) {
+        const stakeTx = {
+            type: "deposit_stake",
+            nominator: longAddress(myAccount.keys.address),
+            nominee: nodeAddress,
+            stake: amount,
+            timestamp: getCorrectedTimestamp()
+        };
+    
+        const txid = await signObj(stakeTx, keys);
+        const response = await injectTx(stakeTx, txid);
+        return response;
+    }
+
+    async validateStakeInputs() {
+        const nodeAddress = this.nodeAddressInput.value.trim();
+        const amountStr = this.amountInput.value.trim();
+        const minStakeAmountStr = this.form.dataset.minStake || '0';
+
+        // Default state: button disabled, warnings hidden
+        this.submitButton.disabled = true;
+        this.amountWarning.style.display = 'none';
+        this.amountWarning.textContent = '';
+        this.nodeAddressWarning.style.display = 'none';
+        this.nodeAddressWarning.textContent = '';
+    
+        // Check 1: Empty Fields
+        if (!amountStr || !nodeAddress) {
+            return;
+        }
+    
+        // Check 1.5: Node Address Format (64 hex chars)
+        const addressRegex = /^[0-9a-fA-F]{64}$/;
+        if (!addressRegex.test(nodeAddress)) {
+            this.nodeAddressWarning.textContent = 'Invalid node address format (must be 64 hex characters).';
+            this.nodeAddressWarning.style.display = 'block';
+            this.amountWarning.style.display = 'none';
+            this.amountWarning.textContent = '';
+            return;
+        } else {
+            this.nodeAddressWarning.style.display = 'none';
+            this.nodeAddressWarning.textContent = '';
+        }
+    
+        // --- Amount Checks ---
+        let amountWei;
+        let minStakeWei;
+        try {
+            amountWei = bigxnum2big(wei, amountStr);
+    
+            // if amount is 0 or less, than return
+            if(amountWei <= 0n) {
+                return;
+            }
+    
+            // get the account info for the address
+            const address = longAddress(myData?.account?.keys?.address);
+    
+            // if the time stamps are more than 30 seconds ago, reset the staked amount and time stamps
+            if(getCorrectedTimestamp() - this.lastValidationTimestamp > 30000) {
+                const res = await queryNetwork(`/account/${address}`);
+                this.stakedAmount = res?.account?.operatorAccountInfo?.stake || 0n;
+                this.lastValidationTimestamp = getCorrectedTimestamp();
+                this.hasNominee = res?.account?.operatorAccountInfo?.nominee;
+            }
+    
+            const staked = this.hasNominee;
+            minStakeWei = bigxnum2big(wei, minStakeAmountStr);
+    
+            if (staked) {
+                // get the amount they have staked from the account info
+                const stakedAmount = this.stakedAmount;
+    
+                // subtract the staked amount from the min stake amount and this will be the new min stake amount
+                minStakeWei = minStakeWei - stakedAmount;
+                // if minStake is less than 0, then set the min stake to 0
+                if(minStakeWei < 0n) {
+                    minStakeWei = 0n;
+                }
+            }
+        } catch (error) {
+            showToast(`Error validating stake inputs: ${error}`, 0, "error");
+            console.error(`error validating stake inputs: ${error}`);
+            return;
+        }
+    
+        // Check 2: Minimum Stake Amount
+        if (amountWei < minStakeWei) {
+            const minStakeFormatted = big2str(minStakeWei, 18).slice(0, -16);
+            this.amountWarning.textContent = `Amount must be at least ${minStakeFormatted} LIB.`;
+            this.amountWarning.style.display = 'block';
+            return;
+        }
+    
+        // Check 3: Sufficient Balance
+        const hasSufficientBalance = await validateBalance(amountWei, 0, this.amountWarning);
+        if (!hasSufficientBalance) {
+            return;
+        }
+    
+        // All checks passed: Enable button
+        this.submitButton.disabled = false;
+        this.amountWarning.style.display = 'none';
+        this.nodeAddressWarning.style.display = 'none';
+    }
+}
+const stakeValidatorModal = new StakeValidatorModal()
+
+class ChatModal {
+    constructor() {
+        this.modal = document.getElementById('chatModal');
+        this.closeButton = document.getElementById('closeChatModal');
+        this.messagesList = document.querySelector('.messages-list');
+        this.sendButton = document.getElementById('handleSendMessage');
+        this.modalAvatar = this.modal.querySelector('.modal-avatar');
+        this.modalTitle = this.modal.querySelector('.modal-title');
+        this.editButton = document.getElementById('chatEditButton');
+        this.sendMoneyButton = document.getElementById('chatSendMoneyButton');
+        this.retryOfTxId = document.getElementById('retryOfTxId');
+        this.messageInput = document.querySelector('.message-input');
+        this.newestReceivedMessage = null;
+        this.newestSentMessage = null;
+        
+        
+        // used by updateTollValue and updateTollRequired
+        this.toll = null;
+        this.tollUnit = null;
+        this.address = null
+    }
+
+    /**
+     * Loads the chat modal event listeners
+     * @returns {void}
+     */
+    load() {
+        // Add message click-to-copy handler
+        this.messagesList.addEventListener('click', this.handleClickToCopy.bind(this));
+        this.sendButton.addEventListener('click', this.handleSendMessage.bind(this));
+        this.closeButton.addEventListener('click', this.close.bind(this));
+        this.sendButton.addEventListener('keydown', ignoreTabKey);
+
+        // Add input event listener for message textarea auto-resize
+        this.messageInput.addEventListener('input', function() {
+            this.style.height = '48px';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
+
+        // Add focus event listener for message input to handle scrolling
+        this.messageInput.addEventListener('focus', function() {
+            const messagesContainer = document.querySelector('.messages-container');
+            if (messagesContainer) {
+                // Check if we're already at the bottom (within 50px threshold)
+                const isAtBottom = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight <= 50;
+                if (isAtBottom) {
+                    // Wait for keyboard to appear and viewport to adjust
+                    setTimeout(() => {
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }, 300); // Increased delay to ensure keyboard is fully shown
+                }
+            }
+        });
+    }
+
+    /**
+     * Opens the chat modal for the given address.
+     * @param {string} address - The address of the contact to open the chat modal for.
+     * @returns {void}
+     */
+    async open(address) {
+        friendModal.setAddress(address);
+        document.getElementById('newChatButton').classList.remove('visible');
+        const contact = myData.contacts[address]
+        friendModal.updateFriendButton(contact, 'addFriendButtonChat');
+        // Set user info
+        this.modalTitle.textContent = contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`;
+
+        // update the toll value. Will not await this and it'll update the toll value while the modal is open.
+        updateTollValue(address);
+
+        // update local contact object with the toll required to send and receive
+        updateTollRequired(address);
+
+        // clear hidden txid input
+        this.retryOfTxId.value = '';
+
+        updateTollAmountUI(address);
+
+        // Add data attributes to store the username and address
+        this.sendMoneyButton.dataset.username = contact.username || address;
+
+        generateIdenticon(contact.address, 40).then(identicon => {
+            this.modalAvatar.innerHTML = identicon;
+        });
+
+        // Clear previous messages from the UI
+        this.messagesList.innerHTML = '';
+
+        // Scroll to bottom (initial scroll for empty list, appendChatModal will scroll later)
+        setTimeout(() => {
+            this.messagesList.parentElement.scrollTop = this.messagesList.parentElement.scrollHeight;
+        }, 100);
+
+        // Add click handler for username to show contact info
+        // TODO: create event listener instead of onclick here
+        const userInfo = this.modal.querySelector('.chat-user-info');
+        userInfo.onclick = () => {
+            const contact = myData.contacts[address];
+            if (contact) {
+                contactInfoModal.open(createDisplayInfo(contact));
+            }
+        };
+
+        // Add click handler for edit button
+        // TODO: create event listener instead of onclick here
+        this.editButton.onclick = () => {
+            const contact = myData.contacts[address];
+            if (contact) {
+                contactInfoModal.open(createDisplayInfo(contact));
+            }
+        };
+
+        // Show modal
+        this.modal.classList.add('active');
+
+        // Clear unread count
+        if (contact.unread > 0) {
+            myData.state.unread = Math.max(0, (myData.state.unread || 0) - contact.unread);
+            contact.unread = 0;
+            updateChatList();
+        }
+
+        // Setup state for appendChatModal and perform initial render
+        this.address = address
+        this.appendChatModal(false); // Call appendChatModal to render messages, ensure highlight=false
+
+        if (isOnline) {
+            if (wsManager && !wsManager.isSubscribed()) {
+                pollChatInterval(pollIntervalChatting) // poll for messages at a faster rate
+            }
+        }
+    }
+
+    /**
+     * Closes the chat modal
+     * @returns {void}
+     */
+    close() {
+        // if newestRecevied message does not have an amount property, then send a read transaction
+        if (this.newestReceivedMessage && !this?.newestReceivedMessage?.amount) {
+            this.sendReadTransaction(this.address);
+        }
+
+        this.sendReclaimTollTransaction(this.address);
+
+        this.modal.classList.remove('active');
+        if (document.getElementById('chatsScreen').classList.contains('active')) {
+            updateChatList()
+            document.getElementById('newChatButton').classList.add('visible');
+        }
+        if (document.getElementById('contactsScreen').classList.contains('active')) {
+            updateContactsList()
+            document.getElementById('newChatButton').classList.add('visible');
+        }
+        this.address = null
+        if (isOnline) {
+            if (wsManager && !wsManager.isSubscribed()) {
+                pollChatInterval(pollIntervalNormal) // back to polling at slower rate
+            }
+        }
+    }
+
+    /**
+     * Send a reclaim toll if the newest sent message is older than 7 days and the contact has a value not 0 in payOnReplay or payOnRead
+     * @param {string} contactAddress - The address of the contact
+     * @returns {Promise<void>}
+     */
+    async sendReclaimTollTransaction(contactAddress) {
+        console.log(`[sendReclaimTollTransaction] entering function`)
+        const sevenDaysAgo = getCorrectedTimestamp() -  (7 * 24 * 60 * 60 * 1000);
+        console.log(`this.newestSentMessage: ${!!this.newestSentMessage}`)
+        console.log(`this.newestSentMessage?.timestamp: ${this.newestSentMessage?.timestamp}`)
+        console.log(`sevenDaysAgo: ${sevenDaysAgo}`)
+        console.log(`this.newestSentMessage?.timestamp > sevenDaysAgo: ${this.newestSentMessage?.timestamp < sevenDaysAgo}`)
+        if (!this.newestSentMessage || this.newestSentMessage?.timestamp > sevenDaysAgo) {
+            console.log(`[sendReclaimTollTransaction] newestSentMessage is null or timestamp is less than 7 days ago, skipping reclaim toll transaction`)
+            return;
+        }
+        const canReclaimToll = await this.canSenderReclaimToll(contactAddress)
+        if (!canReclaimToll) {
+            console.log(`[sendReclaimTollTransaction] does not have a value not 0 in payOnReplay or payOnRead, skipping reclaim toll transaction`)
+            return;
+        }
+
+        const tx = {
+            type: 'reclaim_toll',
+            from: longAddress(myData.account.keys.address),
+            to: longAddress(contactAddress),
+            chatId: hashBytes([longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``),
+            timestamp: getCorrectedTimestamp(),
+        }
+        const txid = await signObj(tx, myAccount.keys)
+        const response = await injectTx(tx, txid)
+        if (!response || !response.result || !response.result.success) {
+            console.warn('reclaim toll transaction failed to send', response)
+        } else {
+            console.log('reclaim toll transaction sent successfully')
+        }
+    }
+
+    /**
+     * return true if when we query chatID account , then check payOnReplay and payOnRead for index of the receiver has a value not 0
+     * @param {string} contactAddress - The address of the contact
+     * @returns {Promise<boolean>} - True if the contact has a value not 0 in payOnReplay or payOnRead, false otherwise
+     */
+    async canSenderReclaimToll(contactAddress) {
+        const contact = myData.contacts[contactAddress];
+        // keep track receiver index during the sort
+        const sortedAddresses = [longAddress(myData.account.keys.address), longAddress(contactAddress)].sort()
+        const receiverIndex = sortedAddresses.indexOf(longAddress(contactAddress))
+        const chatId = hashBytes(sortedAddresses.join``);
+        const chatIdAccount = await queryNetwork(`/messages/${chatId}/toll`)
+        if (!chatIdAccount || !chatIdAccount.toll) {
+            console.warn('chatIdAccount not found', chatIdAccount)
+            return false
+        }
+        const payOnReply = chatIdAccount.toll.payOnReply[receiverIndex] // bigint
+        const payOnRead = chatIdAccount.toll.payOnRead[receiverIndex] // bigint
+        if (payOnReply !== 0n) {
+            return true
+        }
+        if (payOnRead !== 0n) {
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Sends a read transaction to the contact if the contact's timestamp is less than the newest received message's timestamp
+     * @param {string} contactAddress - The address of the contact
+     * @returns {void}
+     */
+    async sendReadTransaction(contactAddress) {
+        const contact = myData.contacts[contactAddress];
+        const latestMessage = this.newestReceivedMessage;
+        // if the other party is not required to pay toll, then don't send a read transaction.
+        if (contact.tollRequiredToReceive === 0) {
+            console.log(`[sendReadTransaction] contact does not need to pay toll, skipping read transaction`)
+            return;
+        }
+        console.log(`[sendReadTransaction] contact.timestamp: ${contact.timestamp}, latestMessage.timestamp: ${latestMessage.timestamp}`)
+        console.log(`[sendReadTransaction] contact.timestamp < latestMessage.timestamp: ${contact.timestamp < latestMessage.timestamp}`)
+        if (contact.timestamp < latestMessage.timestamp) {
+            console.log(`[sendReadTransaction] injecting read transaction`)
+            const readTransaction = await this.createReadTransaction(contactAddress);
+            const txid = await signObj(readTransaction, myAccount.keys)
+            showToast(`Sending read transaction`, 3000, 'info');
+            const response = await injectTx(readTransaction, txid)
+            if (!response || !response.result || !response.result.success) {
+                console.warn('read transaction failed to send', response)
+            } else {
+                contact.timestamp = readTransaction.timestamp;
+            }
+        }
+    }
+
+    /**
+     * Creates a read transaction object for the given contact address
+     * @param {string} contactAddress - The address of the contact
+     * @returns {Object} The read transaction object
+     */
+    async createReadTransaction(contactAddress) {
+        const readTransaction = {
+            type: 'read',
+            from: longAddress(myData.account.keys.address),
+            to: longAddress(contactAddress),
+            chatId: hashBytes([longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``),
+            timestamp: getCorrectedTimestamp(),
+            oldContactTimestamp: myData.contacts[contactAddress].timestamp,
+        }
+        return readTransaction;
+    }
+
+    /**
+     * Invoked when the user clicks the Send button in a recipient (appendChatModal.address) chat modal
+     * Recipient account exists in myData.contacts; was created when the user submitted the New Chat form
+     * @returns {void}
+     */
+    async handleSendMessage() {
+        this.sendButton.disabled = true; // Disable the button
+
+        // if user is blocked, don't send message, show toast
+        if (myData.contacts[this.address].tollRequiredToSend == 2) {
+            showToast('You are blocked by this user', 0, 'error');
+            this.sendButton.disabled = false;
+            return;
+        }
+
+        try {
+            this.messageInput.focus(); // Add focus back to keep keyboard open
+
+            const message = this.messageInput.value.trim();
+            if (!message) {
+                this.sendButton.disabled = false;
+                return;
             }
 
+            const sufficientBalance = await validateBalance(this.toll)
+            if (!sufficientBalance) {
+                showToast('Insufficient balance for toll and fee', 0, 'error');
+                this.sendButton.disabled = false;
+                return;
+            }
+
+            //const messagesList = this.messagesList;
+
+            // Get current chat data
+            const chatsData = myData
+            /*
+            const currentAddress = Object.values(chatsData.contacts).find(contact =>
+                modalTitle.textContent === (contact.name || contact.username || `${contact.address.slice(0,8)}...${contact.address.slice(-6)}`)
+            )?.address;
+            */
+            const currentAddress = this.address
+            if (!currentAddress) return;
+
+            // Check if trying to message self
+            if (currentAddress === myAccount.address) {
+                return;
+            }
+
+            // Get sender's keys from wallet
+            const keys = myAccount.keys;
+            if (!keys) {
+                alert('Keys not found for sender address');
+                return;
+            }
+
+            ///yyy
+            // Get recipient's public key from contacts
+            let recipientPubKey = myData.contacts[currentAddress]?.public;
+            let pqRecPubKey = myData.contacts[currentAddress]?.pqPublic;
+            if (!recipientPubKey || !pqRecPubKey) {
+                const recipientInfo = await queryNetwork(`/account/${longAddress(currentAddress)}`)
+                if (!recipientInfo?.account?.publicKey){
+                    console.log(`no public key found for recipient ${currentAddress}`)
+                    return
+                }
+                recipientPubKey = recipientInfo.account.publicKey
+                myData.contacts[currentAddress].public = recipientPubKey
+                pqRecPubKey = recipientInfo.account.pqPublicKey
+                myData.contacts[currentAddress].pqPublic = pqRecPubKey
+            }
+
+            // Generate shared secret using ECDH and take first 32 bytes
+            let dhkey = ecSharedKey(keys.secret, recipientPubKey)
+            const { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey)
+            const combined = new Uint8Array(dhkey.length + sharedSecret.length)
+            combined.set(dhkey)
+            combined.set(sharedSecret, dhkey.length)
+            dhkey = deriveDhKey(combined);
+
+            // We purposely do not encrypt/decrypt using browser native crypto functions; all crypto functions must be readable
+            // Encrypt message using shared secret
+            const encMessage = encryptChacha(dhkey, message)
+
+            // Create message payload
+            const payload = {
+                message: encMessage,
+                encrypted: true,
+                encryptionMethod: 'xchacha20poly1305',
+                pqEncSharedKey: bin2base64(cipherText),
+                sent_timestamp: getCorrectedTimestamp()
+            };
+
+            // Always include username, but only include other info if recipient is a friend
+            const contact = myData.contacts[currentAddress];
+            // Create basic sender info with just username
+            const senderInfo = {
+                username: myAccount.username
+            };
+
+            // Add additional info only if recipient is a friend
+            if (contact && contact.friend) {
+                // Add more personal details for friends
+                senderInfo.name = myData.account.name;
+                senderInfo.email = myData.account.email;
+                senderInfo.phone = myData.account.phone;
+                senderInfo.linkedin = myData.account.linkedin;
+                senderInfo.x = myData.account.x;
+            }
+
+            // Always encrypt and send senderInfo (which will contain at least the username)
+            payload.senderInfo = encryptChacha(dhkey, stringify(senderInfo));
+
+
+            // can create a function to query the account and get the receivers toll they've set
+            // TODO: will need to query network and receiver account where we validate
+            // TODO: decided to query everytime we do chatModal.open and save as global variable. We don't need to clear it but we can clear it when closing the modal but should get reset when opening the modal again anyway
+            const toll = this.toll;
+
+            const chatMessageObj = await this.createChatMessage(currentAddress, payload, toll, keys);
+            const txid = await signObj(chatMessageObj, keys)
+
+            // if there a hidden txid input, get the value to be used to delete that txid from relevant data stores
+            const retryTxId = this.retryOfTxId.value;
+            if (retryTxId) {
+                removeFailedTx(retryTxId, currentAddress);
+                this.retryOfTxId.value = '';
+                failedMessageModal.handleFailedMessageClick.txid = '';
+                failedMessageModal.handleFailedMessageClick.handleFailedMessage = '';
+            }
+
+            // --- Optimistic UI Update ---
+            // Create new message object for local display immediately
+            const newMessage = {
+                message,
+                timestamp: payload.sent_timestamp,
+                sent_timestamp: payload.sent_timestamp,
+                my: true,
+                txid: txid,
+                status: 'sent'
+            };
+            insertSorted(chatsData.contacts[currentAddress].messages, newMessage, 'timestamp');
+
+            // Update or add to chats list, maintaining chronological order
+            const chatUpdate = {
+                address: currentAddress,
+                timestamp: newMessage.sent_timestamp,
+                txid: txid
+            };
+
+            // Remove existing chat for this contact if it exists. Not handling in removeFailedTx anymore.
+            const existingChatIndex = chatsData.chats.findIndex(chat => chat.address === currentAddress);
+            if (existingChatIndex !== -1) {
+                chatsData.chats.splice(existingChatIndex, 1);
+            }
+
+            insertSorted(chatsData.chats, chatUpdate, 'timestamp');
+
+            // Clear input and reset height
+            this.messageInput.value = '';
+            this.messageInput.style.height = '48px'; // original height
+
+            // Update the chat modal UI immediately
+            this.appendChatModal() // This should now display the 'sending' message
+
+            // Scroll to bottom of chat modal
+            this.messagesList.parentElement.scrollTop = this.messagesList.parentElement.scrollHeight;
+            // --- End Optimistic UI Update ---
+
+            //console.log('payload is', payload)
+            // Send the message transaction using createChatMessage with default toll of 1
+            const response = await injectTx(chatMessageObj, txid)
+
+            if (!response || !response.result || !response.result.success) {
+                console.log('message failed to send', response)
+                //let userMessage = 'Message failed to send. Please try again.';
+                //const reason = response.result?.reason || '';
+
+                /* if (reason.includes('does not have sufficient funds')) {
+                    userMessage = 'Message failed: Insufficient funds for toll & fees.';
+                } else if (reason) {
+                    // Attempt to provide a slightly more specific message if reason is short
+                    userMessage = `Message failed: ${reason.substring(0, 100)}${reason.length > 100 ? '...' : ''}`;
+                } */
+                //showToast(userMessage, 4000, 'error');
+
+                // Update message status to 'failed' in the UI
+                updateTransactionStatus(txid, currentAddress, 'failed', 'message');
+                this.appendChatModal();
+
+                // Remove from pending transactions as injectTx itself indicated failure
+                /* if (myData && myData.pending) {
+                    myData.pending = myData.pending.filter(pTx => pTx.txid !== txid);
+                } */
+            } else {
+                // Message sent successfully (or at least accepted by gateway)
+                // The optimistic UI update for 'sent' status is already handled before injectTx.
+                // No specific action needed here for success as the UI already reflects 'sent'.
+            }
+        } catch (error) {
+            console.error('Message error:', error);
+            alert('Failed to send message. Please try again.');
+        } finally {
+            this.sendButton.disabled = false; // Re-enable the button
         }
-    } catch (error) {
-        showToast(`Error validating stake inputs: ${error}`, 0, "error");
-        console.error(`error validating stake inputs: ${error}`);
-        //amountWarningElement.textContent = 'Invalid amount format.';
-        //amountWarningElement.style.display = 'block';
-        return; // Keep button disabled
     }
 
-    // Check 2: Minimum Stake Amount
-    if (amountWei < minStakeWei) {
-        const minStakeFormatted = big2str(minStakeWei, 18).slice(0, -16); // Example formatting
-        amountWarningElement.textContent = `Amount must be at least ${minStakeFormatted} LIB.`;
-        amountWarningElement.style.display = 'block';
-        return; // Keep button disabled
+    /**
+     * Create a chat message object
+     * @param {string} to - The address of the recipient
+     * @param {string} payload - The payload of the message
+     * @param {number} toll - The toll of the message
+     * @param {Object} keys - The keys of the sender
+     * @returns {Object} The chat message object
+     */
+    async createChatMessage(to, payload, toll, keys) {
+        const toAddr = longAddress(to);
+        const fromAddr = longAddress(keys.address)
+        await getNetworkParams();
+        const tx = {
+            type: 'message',
+            from: fromAddr,
+            to: toAddr,
+            amount: toll,       // not sure if this is used by the backend
+            chatId: hashBytes([fromAddr, toAddr].sort().join``),
+            message: 'x',
+            xmessage: payload,
+            timestamp: getCorrectedTimestamp(),
+            network: NETWORK_ACCOUNT_ID,
+            fee: (parameters.current.transactionFee || 1n * wei)           // This is not used by the backend
+        }
+        return tx
     }
 
-    // Check 3: Sufficient Balance (using existing function)
-    // Assuming LIB is asset index 0 since after creation of wallet, LIB is the first asset
-    const hasSufficientBalance = await validateBalance(amountStr, 0, amountWarningElement);
-    if (!hasSufficientBalance) {
-        // validateBalance already shows the warning in amountWarningElement
-        return; // Keep button disabled
+    /**
+     * Appends the chat modal to the DOM
+     * @param {boolean} highlightNewMessage - Whether to highlight the newest message
+     * @returns {void}
+     */
+    appendChatModal(highlightNewMessage = false) {
+        const currentAddress = this.address; // Use a local constant
+        console.log('appendChatModal running for address:', currentAddress, 'Highlight:', highlightNewMessage);
+        if (!currentAddress) { return; }
+    
+        const contact = myData.contacts[currentAddress];
+        if (!contact || !contact.messages) {
+                console.log('No contact or messages found for address:', this.address);
+                return;
+        }
+        const messages = contact.messages; // Already sorted descending
+    
+        if (!this.modal) return;
+        if (!this.messagesList) return;
+    
+        // --- 1. Identify the actual newest received message data item ---
+        // Since messages are sorted descending (newest first), the first item with my: false is the newest received.
+        const newestReceivedItem = messages.find(item => !item.my);
+        console.log('appendChatModal: Identified newestReceivedItem data:', newestReceivedItem);
+        this.newestReceivedMessage = newestReceivedItem;
+        this.newestSentMessage = messages.find(item => item.my);
+    
+        // 2. Clear the entire list
+        this.messagesList.innerHTML = '';
+    
+        // 3. Iterate backwards through messages (oldest to newest for rendering order)
+        // messages are already sorted descending (newest first) in myData
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const item = messages[i];
+            let messageHTML = '';
+            const timeString = formatTime(item.timestamp);
+            // Use a consistent timestamp attribute for potential future use (e.g., message jumping)
+            const timestampAttribute = `data-message-timestamp="${item.timestamp}"`;
+            // Add txid attribute if available
+            const txidAttribute = item?.txid ? `data-txid="${item.txid}"` : '';
+            const statusAttribute = item?.status ? `data-status="${item.status}"` : '';
+    
+            // Check if it's a payment based on the presence of the amount property (BigInt)
+            if (typeof item.amount === 'bigint') {
+                // Define common payment variables
+                const itemAmount = item.amount;
+                const itemMemo = item.message; // Memo is stored in the 'message' field for transfers
+    
+                // Assuming LIB (18 decimals) for now. TODO: Handle different asset decimals if needed.
+                // Format amount correctly using big2str
+                const amountStr = big2str(itemAmount, 18);
+                const amountDisplay = `${amountStr.slice(0, 6)} ${item.symbol || 'LIB'}`; // Use item.symbol or fallback
+    
+                // Check item.my for sent/received
+    
+                //console.log(`debug item: ${JSON.stringify(item, (key, value) => typeof value === 'bigint' ? big2str(value, 18) : value)}`)
+                // --- Render Payment Transaction ---
+                const directionText = item.my ? '-' : '+';
+                const messageClass = item.my ? 'sent' : 'received';
+                messageHTML = `
+                    <div class="message ${messageClass} payment-info" ${timestampAttribute} ${txidAttribute} ${statusAttribute}>
+                        <div class="payment-header">
+                            <span class="payment-direction">${directionText}</span>
+                            <span class="payment-amount">${amountDisplay}</span>
+                        </div>
+                        ${itemMemo ? `<div class="payment-memo">${linkifyUrls(itemMemo)}</div>` : ''}
+                        <div class="message-time">${timeString}</div>
+                    </div>
+                `;
+            } else {
+                // --- Render Chat Message ---
+                const messageClass = item.my ? 'sent' : 'received'; // Use item.my directly
+                messageHTML = `
+                    <div class="message ${messageClass}" ${timestampAttribute} ${txidAttribute} ${statusAttribute}>
+                        <div class="message-content" style="white-space: pre-wrap">${linkifyUrls(item.message)}</div>
+                        <div class="message-time">${timeString}</div>
+                    </div>
+                `;
+            }
+    
+            // 4. Append the constructed HTML
+            // Insert at the end of the list to maintain correct chronological order
+            this.messagesList.insertAdjacentHTML('beforeend', messageHTML);
+            // The newest received element will be found after the loop completes
+        }
+    
+        // --- 5. Find the corresponding DOM element after rendering ---
+        // This happens inside the setTimeout to ensure elements are in the DOM
+    
+        // 6. Delayed Scrolling & Highlighting Logic (after loop)
+        setTimeout(() => {
+            const messageContainer = this.messagesList.parentElement;
+    
+            // Find the DOM element for the actual newest received item using its timestamp
+            // Only proceed if newestReceivedItem was found and highlightNewMessage is true
+            if (newestReceivedItem && highlightNewMessage) {
+                const newestReceivedElementDOM = this.messagesList.querySelector(`[data-message-timestamp="${newestReceivedItem.timestamp}"]`);
+    
+                if (newestReceivedElementDOM) {
+                    // Found the element, scroll to and highlight it
+                    newestReceivedElementDOM.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    
+                    // Apply highlight immediately
+                    newestReceivedElementDOM.classList.add('highlighted');
+    
+                    // Set timeout to remove the highlight after a duration
+                    setTimeout(() => {
+                         // Check if element still exists before removing class
+                         if (newestReceivedElementDOM && newestReceivedElementDOM.parentNode) {
+                            newestReceivedElementDOM.classList.remove('highlighted');
+                         }
+                    }, 3000);
+                } else {
+                     console.warn('appendChatModal: Could not find DOM element for newestReceivedItem with timestamp:', newestReceivedItem.timestamp);
+                     // If element not found, just scroll to bottom
+                     if (messageContainer) {
+                        messageContainer.scrollTop = messageContainer.scrollHeight;
+                     }
+                }
+    
+            } else {
+                // No received messages found, not highlighting, or highlightNewMessage is false,
+                // just scroll to the bottom if the container exists.
+                if (messageContainer) {
+                    messageContainer.scrollTop = messageContainer.scrollHeight;
+                }
+            }
+        }, 300); // <<< Delay of 300 milliseconds for rendering
     }
 
-    // All checks passed: Enable button
-    submitButton.disabled = false;
-    amountWarningElement.style.display = 'none'; // Ensure warning is hidden if balance is sufficient
-    nodeAddressWarningElement.style.display = 'none'; // Ensure address warning is also hidden
+    /**
+     * Invoked when the user clicks on a message to copy the content
+     * It will copy the content to the clipboard
+     * @param {Event} e - The event object
+     * @returns {void}
+     */
+    async handleClickToCopy(e) {
+        const messageEl = e.target.closest('.message');
+        if (!messageEl) return;
+
+        // Prevent copying if the message has failed and not `payment-info`
+        if (messageEl.dataset.status === 'failed') {
+            console.log('Copy prevented for failed message.');
+
+            // If the message is not a payment message, show the failed message modal
+            if (!messageEl.classList.contains('payment-info')) {
+                failedMessageModal.handleFailedMessageClick(messageEl)
+            }
+
+            // If the message is a payment message, show the failed history item modal
+            if (messageEl.classList.contains('payment-info')) {
+                failedMessageModal.handleFailedPaymentClick(messageEl.dataset.txid, messageEl)
+            }
+
+            // TODO: if message is a payment open sendModal and fill with information in the payment message?
+
+            return;
+        }
+
+        let textToCopy = null;
+        let contentType = 'Text'; // Default content type for toast
+
+        // Check if it's a payment message
+        if (messageEl.classList.contains('payment-info')) {
+            const paymentMemoEl = messageEl.querySelector('.payment-memo');
+            if (paymentMemoEl) {
+                textToCopy = paymentMemoEl.textContent;
+                contentType = 'Memo'; // Update type for toast
+            } else {
+                // No memo element found in this payment block
+                showToast('No memo to copy', 2000, 'info');
+                return;
+            }
+        } else {
+            // It's a regular chat message
+            const messageContentEl = messageEl.querySelector('.message-content');
+            if (messageContentEl) {
+                textToCopy = messageContentEl.textContent;
+                contentType = 'Message'; // Update type for toast
+            }
+            else {
+                // Should not happen for regular messages, but handle gracefully
+                showToast('No content to copy', 2000, 'info');
+                return;
+            }
+        }
+
+        // Proceed with copying if text was found
+        if (textToCopy && textToCopy.trim()) {
+            try {
+                await navigator.clipboard.writeText(textToCopy.trim());
+                showToast(`${contentType} copied to clipboard`, 2000, 'success');
+            } catch (err) {
+                console.error('Failed to copy:', err);
+                showToast(`Failed to copy ${contentType.toLowerCase()}`, 2000, 'error');
+            }
+        } else if (contentType === 'Memo'){
+            // Explicitly handle the case where memo exists but is empty/whitespace
+            showToast('Memo is empty', 2000, 'info');
+        }
+        // No need for an else here, cases with no element are handled above
+    }
+
+    /**
+     * Refresh the current view based on which screen the user is viewing.
+     * Primarily called when a pending transaction fails to remove it from the UI.
+     * Updates UI components only for the view that's currently active.
+     * @param {string} [txid] - Optional transaction ID that failed and needs removal.
+     */
+    refreshCurrentView(txid) { // contactAddress is kept for potential future use but not needed for this txid-based logic
+        const chatsScreen = document.getElementById('chatsScreen');
+        const historyModal = document.getElementById('historyModal');
+        const messagesList = this.modal ? this.messagesList : null;
+
+        // 1. Refresh History Modal if active
+        if (historyModal && historyModal.classList.contains('active')) {
+            console.log("DEBUG: Refreshing transaction history modal due to transaction failure.");
+            updateTransactionHistory();
+        }
+        // 2. Refresh Chat Modal if active AND the failed txid's message is currently rendered
+        if (this.modal && this.modal.classList.contains('active') && txid && messagesList) {
+            // Check if an element with the specific data-txid exists within the message list
+            const messageElement = messagesList.querySelector(`[data-txid="${txid}"]`);
+
+            if (messageElement) {
+                // If the element exists, the failed message is visible in the open chat. Refresh the modal.
+                console.log(`DEBUG: Refreshing active chat modal because failed txid ${txid} was found in the view.`);
+                this.modal.appendChatModal(); // This will redraw the messages based on the updated data (where the failed tx is removed)
+            } else {
+                // The failed txid doesn't correspond to a visible message in the *currently open* chat modal. No UI refresh needed for the modal itself.
+                console.log(`DEBUG: Skipping chat modal refresh. Failed txid ${txid} not found in the active modal's message list.`);
+            }
+        }
+        // 3. Refresh Chat List if active
+        if (chatsScreen && chatsScreen.classList.contains('active')) {
+            console.log("DEBUG: Refreshing chat list view due to transaction failure.");
+            updateChatList();
+        }
+        // No other active view to refresh in this context
+    }
 }
-validateStakeInputs.stakedAmount = 0n
-validateStakeInputs.timeStamps = 0
-validateStakeInputs.nominee = false
+
+const chatModal = new ChatModal()
+
+class FailedMessageModal {
+    constructor() {
+        this.modal = document.getElementById('failedMessageModal');
+        this.retryButton = this.modal.querySelector('.retry-button');
+        this.deleteButton = this.modal.querySelector('.delete-button');
+        this.closeButton = document.getElementById('closeFailedMessageModal');
+        // used by handleFailedMessageClick
+        this.handleFailedMessageClick = {
+            handleFailedMessage: '',
+            txid: ''
+        }
+        
+    }
+
+    /**
+     * Loads the failed message modal event listeners
+     * @returns {void}
+     */
+    load() {
+        this.retryButton.addEventListener('click', this.handleFailedMessageRetry.bind(this));
+        this.deleteButton.addEventListener('click', this.handleFailedMessageDelete.bind(this));
+        this.closeButton.addEventListener('click', this.closeFailedMessageModalAndClearState.bind(this));
+        this.modal.addEventListener('click', this.handleFailedMessageBackdropClick.bind(this));
+    }
+
+    /**
+     * When user clicks on a failed message this will show the failed message modal with retry, delete (delete from all data stores), and close buttons
+     * It will also store the message content and txid in the handleSendMessage object containing the handleFailedMessage and txid properties
+     * @param {Element} messageEl - The message element that failed
+     * @returns {void}
+     */
+    handleFailedMessageClick(messageEl) {
+        // Get the message content and txid from the original failed message element
+        const messageContent = messageEl.querySelector('.message-content').textContent;
+        const originalTxid = messageEl.dataset.txid;
+
+        // Store content and txid in properties of handleSendMessage
+        this.handleFailedMessageClick.handleFailedMessage = messageContent;
+        this.handleFailedMessageClick.txid = originalTxid;
+
+        // Show the modal
+        if (this.modal) {
+            this.modal.classList.add('active');
+        }
+    }
+
+    /**
+     * When the user clicks the retry button in the failed message modal
+     * It will fill the chat modal with the message content and txid of the failed message and focus the message input
+     * @returns {void}
+     */
+    handleFailedMessageRetry() {
+        // Use the values stored when handleFailedMessage was called
+        const messageToRetry = this.handleFailedMessageClick.handleFailedMessage;
+        const originalTxid = this.handleFailedMessageClick.txid;
+
+        if (this.messageInput && this.retryTxIdInput && typeof messageToRetry === 'string' && typeof originalTxid === 'string') {
+            this.messageInput.value = messageToRetry;
+            this.retryTxIdInput.value = originalTxid;
+
+            if (this.modal) {
+                this.modal.classList.remove('active');
+            }
+            this.messageInput.focus();
+
+            // Clear the stored values after use
+            this.handleFailedMessageClick.handleFailedMessage = '';
+            this.handleFailedMessageClick.txid = '';
+        } else {
+            console.error('Error preparing message retry: Necessary elements or data missing.');
+            if (this.modal) {
+                this.modal.classList.remove('active');
+            }
+        }
+    }
+
+    /**
+     * When the user clicks the delete button in the failed message modal
+     * It will delete the message from all data stores using removeFailedTx and remove pending tx if exists
+     * @returns {void}
+     */
+    handleFailedMessageDelete() {
+        const originalTxid = this.handleFailedMessageClick.txid;
+
+        if (typeof originalTxid === 'string' && originalTxid) {
+            const currentAddress = this.address
+            removeFailedTx(originalTxid, currentAddress)
+
+            if (this.modal) {
+                this.modal.classList.remove('active');
+            }
+
+            // Clear the stored values
+            this.handleFailedMessageClick.handleFailedMessage = '';
+            this.handleFailedMessageClick.txid = '';
+            // refresh current chatModal
+            this.appendChatModal();
+        } else {
+            console.error('Error deleting message: TXID not found.');
+            if (this.modal) {
+                this.modal.classList.remove('active');
+            }
+        }
+    }
+
+    /**
+     * Invoked when the user clicks the close button in the failed message modal
+     * It will close the modal and clear the stored values
+     * @returns {void}
+     */
+    closeFailedMessageModalAndClearState() {
+        if (this.modal) {
+            this.modal.classList.remove('active');
+        }
+        // Clear the stored values when modal is closed
+        this.handleFailedMessageClick.handleFailedMessage = '';
+        this.handleFailedMessageClick.txid = '';
+    }
+
+    /**
+     * Invoked when the user clicks the backdrop in the failed message modal
+     * It will close the modal and clear the stored values
+     * @param {Event} event - The event object
+     * @returns {void}
+     */
+    handleFailedMessageBackdropClick(event) {
+        if (event.target === this.modal) {
+            this.closeFailedMessageModalAndClearState();
+        }
+    }
+}
+
+const failedMessageModal = new FailedMessageModal();
+
+// new chat modal
+class NewChatModal {
+    constructor() {
+        this.modal = document.getElementById('newChatModal');
+        this.newChatButton = document.getElementById('newChatButton');
+        this.closeNewChatModalButton = document.getElementById('closeNewChatModal');
+        this.newChatForm = document.getElementById('newChatForm');
+        this.usernameAvailable = document.getElementById('chatRecipientError');
+        this.recipientInput = document.getElementById('chatRecipient');
+        this.submitButton = document.querySelector('#newChatForm button[type="submit"]');
+        this.usernameInputCheckTimeout = null;
+    }
+
+    /**
+     * Loads the new chat modal event listeners
+     * @returns {void}
+     */
+    load() {
+        this.newChatButton.addEventListener('click', this.openNewChatModal.bind(this));
+        this.closeNewChatModalButton.addEventListener('click', this.closeNewChatModal.bind(this));
+        this.newChatForm.addEventListener('submit', this.handleNewChat.bind(this));
+        this.recipientInput.addEventListener('input', debounce(this.handleUsernameInput.bind(this), 300));
+    }
+
+    /**
+     * Invoked when the user clicks the new chat button
+     * It will open the new chat modal
+     * @returns {void}
+     */
+    openNewChatModal() {
+        this.modal.classList.add('active');
+        this.newChatButton.classList.remove('visible');
+        this.usernameAvailable.style.display = 'none';
+        this.submitButton.disabled = true;
+    
+        // Create the handler function
+        const focusHandler = () => {
+            this.recipientInput.focus();
+            this.modal.removeEventListener('transitionend', focusHandler);
+        };
+    
+        // Add the event listener
+        // TODO: move focusHandler out and move event listener to load()
+        this.modal.addEventListener('transitionend', focusHandler);
+    }
+
+    /**
+     * Invoked when the user clicks the close button in the new chat modal
+     * It will close the modal and reset the form
+     * @returns {void}
+     */
+    closeNewChatModal() {
+        this.modal.classList.remove('active');
+        this.newChatForm.reset();
+        if (document.getElementById('chatsScreen').classList.contains('active')) {
+            this.newChatButton.classList.add('visible');
+        }
+        if (document.getElementById('contactsScreen').classList.contains('active')) {
+            this.newChatButton.classList.add('visible');
+        }
+    }
+
+    /**
+     * Invoked when the user submits the new chat form
+     * It will check if the username is valid, available, or not available
+     * @param {Event} event - The event object
+     * @returns {void}
+     */
+    async handleNewChat(event) {
+        event.preventDefault();
+        const input = this.recipientInput.value.trim();
+        let recipientAddress;
+        let username;
+    
+        this.hideRecipientError();
+    
+        // Check if input is an Ethereum address
+        if (input.startsWith('0x')) {
+            if (!isValidEthereumAddress(input)) {
+                this.showRecipientError('Invalid Ethereum address format');
+                return;
+            }
+            // Input is valid Ethereum address, normalize it
+            recipientAddress = normalizeAddress(input);
+        } else {
+            if (input.length < 3) {
+                this.showRecipientError('Username too short');
+                return;
+            }
+            username = normalizeUsername(input)
+            // Treat as username and lookup address
+            const usernameBytes = utf82bin(username);
+            const usernameHash = hashBytes(usernameBytes);
+            try {
+                const data = await queryNetwork(`/address/${usernameHash}`)
+                if (!data || !data.address) {
+                    this.showRecipientError('Username not found');
+                    return;
+                }
+                // Normalize address from API if it has 0x prefix or trailing zeros
+                recipientAddress = normalizeAddress(data.address);
+            } catch (error) {
+                console.log('Error looking up username:', error);
+                this.showRecipientError('Error looking up username');
+                return;
+            }
+        }
+    
+        // Get or create chat data
+        const chatsData = myData
+    
+        // Check if contact exists
+        if (!chatsData.contacts[recipientAddress]) { createNewContact(recipientAddress) }
+        chatsData.contacts[recipientAddress].username = username
+    
+        // Close new chat modal and open chat modal
+        this.closeNewChatModal();
+        chatModal.open(recipientAddress);
+    }
+
+    /**
+     * Hide error message in the new chat form
+     * @returns {void}
+     */
+    hideRecipientError() {
+        this.usernameAvailable.style.display = 'none';
+    }
+
+    /**
+     * Show error message in the new chat form
+     * @param {string} message - The error message to show
+     * @returns {void}
+     */
+    showRecipientError(message) {
+        this.usernameAvailable.textContent = message;
+        this.usernameAvailable.style.color = '#dc3545';  // Always red for errors
+        this.usernameAvailable.style.display = 'inline';
+    }
+
+    /**
+     * Invoked when the user types in the username input
+     * It will check if the username is too short, available, or not available
+     * @param {Event} e - The event object
+     * @returns {void}
+     */
+    handleUsernameInput(e) {
+        this.usernameAvailable.style.display = 'none';
+        this.submitButton.disabled = true;
+
+        const username = normalizeUsername(e.target.value);
+
+        // Clear previous timeout
+        if (this.usernameInputCheckTimeout) {
+            clearTimeout(this.usernameInputCheckTimeout);
+        }
+
+        // Check if username is too short
+        if (username.length < 3) {
+            this.usernameAvailable.textContent = 'too short';
+            this.usernameAvailable.style.color = '#dc3545';
+            this.usernameAvailable.style.display = 'inline';
+            return;
+        }
+
+        // Check username availability
+        this.usernameInputCheckTimeout = setTimeout(async () => {
+            const taken = await checkUsernameAvailability(username, myAccount.keys.address);
+            if (taken == 'taken') {
+                this.usernameAvailable.textContent = 'found';
+                this.usernameAvailable.style.color = '#28a745';
+                this.usernameAvailable.style.display = 'inline';
+                this.submitButton.disabled = false;
+            } else if ((taken == 'mine') || (taken == 'available')) {
+                this.usernameAvailable.textContent = 'not found';
+                this.usernameAvailable.style.color = '#dc3545';
+                this.usernameAvailable.style.display = 'inline';
+                this.submitButton.disabled = true;
+            } else {
+                this.usernameAvailable.textContent = 'network error';
+                this.usernameAvailable.style.color = '#dc3545';
+                this.usernameAvailable.style.display = 'inline';
+                this.submitButton.disabled = true;
+            }
+        }, 1000);
+    }
+}
+
+const newChatModal = new NewChatModal();
+
+// Send Modal
+class SendModal {
+    constructor() {
+        this.modal = document.getElementById('sendModal');
+        this.openSendModalButton = document.getElementById('openSendModal');
+        this.closeSendModalButton = document.getElementById('closeSendModal');
+        this.sendForm = document.getElementById('sendForm');
+        this.username = null;
+        this.usernameInput = document.getElementById('sendToAddress');
+        this.amountInput = document.getElementById('sendAmount');
+        this.memoInput = document.getElementById('sendMemo');
+        this.retryTxIdInput = document.getElementById('retryOfPaymentTxId');
+        this.usernameAvailable = document.getElementById('sendToAddressError');
+        this.submitButton = document.querySelector('#sendForm button[type="submit"]');
+        this.assetSelectDropdown = document.getElementById('sendAsset');
+        this.sendModalCheckTimeout = null;
+        this.balanceSymbol = document.getElementById('balanceSymbol');
+        this.availableBalance = document.getElementById('availableBalance');
+        this.toggleBalanceButton = document.getElementById('toggleBalance');
+    }
+
+    /**
+     * Loads the send modal event listeners
+     * @returns {void}
+     */
+    load() {
+        // TODO add comment about which send form this is for chat or assets
+        this.openSendModalButton.addEventListener('click', this.open.bind(this));
+        this.closeSendModalButton.addEventListener('click', this.close.bind(this));
+        this.sendForm.addEventListener('submit', this.handleSendFormSubmit.bind(this));
+        // TODO: need to add check that it's not a back/delete key
+        this.usernameInput.addEventListener('input',  async (e) => {
+            this.handleSendToAddressInput(e);
+        });
+
+        this.availableBalance.addEventListener('click', this.fillAmount.bind(this));
+        this.assetSelectDropdown.addEventListener('change', () => {
+            // updateSendAddresses();
+            this.updateAvailableBalance();
+        });
+        // amount input listener for real-time balance validation
+        this.amountInput.addEventListener('input', this.updateAvailableBalance.bind(this));
+        // Add custom validation message for minimum amount
+        this.amountInput.addEventListener('invalid', (event) => {
+            if (event.target.validity.rangeUnderflow) {
+                event.target.setCustomValidity('Value must be at least 1 wei (1×10⁻¹⁸ LIB).');
+            }
+        });
+        this.amountInput.addEventListener('input', (event) => {
+            // Clear custom validity message when user types
+            event.target.setCustomValidity('');
+        });
+        // event listener for toggle LIB/USD button
+        this.toggleBalanceButton.addEventListener('click', this.handleToggleBalance.bind(this));
+    }
+
+    /**
+     * Opens the send modal
+     * @returns {void}
+     */
+    async open() {
+        this.modal.classList.add('active');
+    
+        // Clear fields when opening the modal
+        this.usernameInput.value = '';
+        this.amountInput.value = '';
+        this.memoInput.value = '';
+        this.retryTxIdInput.value = '';
+    
+        this.usernameAvailable.style.display = 'none';
+        this.submitButton.disabled = true;
+        openQRScanModal.fill = fillPaymentFromQR  // set function to handle filling the payment form from QR data
+    
+        if (this.username) {
+            this.usernameInput.value = this.username;
+            setTimeout(() => {
+                this.usernameInput.dispatchEvent(new Event('input'));
+            }, 500);
+            this.username = null
+        }
+    
+    
+        await updateWalletBalances(); // Refresh wallet balances first
+        // Get wallet data
+        const wallet = myData.wallet
+        // Populate assets dropdown
+        this.assetSelectDropdown.innerHTML = wallet.assets.map((asset, index) =>
+            `<option value="${index}">${asset.name} (${asset.symbol})</option>`
+        ).join('');
+    
+    
+        // Update addresses for first asset
+        this.updateSendAddresses();
+    }
+
+    /**
+     * Closes the send modal
+     * @returns {void}
+     */
+    async close() {
+        await updateChatList()
+        this.modal.classList.remove('active');
+        this.sendForm.reset();
+        this.username = null
+    }
+
+    /**
+     * Invoked when the user types in the username input
+     * It will check if the username is too short, available, or not available
+     * @param {Event} e - The event object
+     * @returns {void}
+     */
+    async handleSendToAddressInput(e){
+        // Check availability on input changes
+        const username = normalizeUsername(e.target.value);
+        const usernameAvailable = this.usernameAvailable;
+    
+    
+        // Clear previous timeout
+        if (this.sendModalCheckTimeout) {
+            clearTimeout(this.sendModalCheckTimeout);
+        }
+    
+        // Check if username is too short
+        if (username.length < 3) {
+            usernameAvailable.textContent = 'too short';
+            usernameAvailable.style.color = '#dc3545';
+            usernameAvailable.style.display = 'inline';
+            await this.refreshSendButtonDisabledState();
+            return;
+        }
+    
+        // Check network availability
+        this.sendModalCheckTimeout = setTimeout(async () => {
+            const taken = await checkUsernameAvailability(username, myAccount.keys.address);
+            if (taken == 'taken') {
+                usernameAvailable.textContent = 'found';
+                usernameAvailable.style.color = '#28a745';
+                usernameAvailable.style.display = 'inline';
+            } else if((taken == 'mine')) {
+                usernameAvailable.textContent = 'mine';
+                usernameAvailable.style.color = '#dc3545';
+                usernameAvailable.style.display = 'inline';
+            } else if ((taken == 'available')) {
+                usernameAvailable.textContent = 'not found';
+                usernameAvailable.style.color = '#dc3545';
+                usernameAvailable.style.display = 'inline';
+            } else {
+                usernameAvailable.textContent = 'network error';
+                usernameAvailable.style.color = '#dc3545';
+                usernameAvailable.style.display = 'inline';
+            }
+            await this.refreshSendButtonDisabledState(); // Update button state based on new address status and current amount status
+        }, 1000);
+    }
+
+    /**
+     * Handles the send form submit
+     * @param {Event} event - The event object
+     * @returns {void}
+     */
+    async handleSendFormSubmit(event) {
+        event.preventDefault();
+
+        // Get form values
+        const assetSymbol = this.assetSelectDropdown.options[this.assetSelectDropdown.selectedIndex].text;
+        let amount = this.amountInput.value;
+        const memo = this.memoInput.value;
+        const confirmButton = document.getElementById('confirmSendButton');
+        const cancelButton = document.getElementById('cancelSendButton');
+
+        await getNetworkParams();
+        const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+
+        // need to convert to LIB if USD is selected
+        const isLib = this.balanceSymbol.textContent === 'LIB';
+        if (!isLib) {
+            amount = (amount / scalabilityFactor);
+        }
+
+        // Update confirmation modal with values
+        document.getElementById('confirmRecipient').textContent = this.usernameInput.value;
+        document.getElementById('confirmAmount').textContent = `${amount}`;
+        document.getElementById('confirmAsset').textContent = assetSymbol;
+
+        // Show/hide memo if present
+        const memoGroup = document.getElementById('confirmMemoGroup');
+        if (memo) {
+            document.getElementById('confirmMemo').textContent = memo;
+            memoGroup.style.display = 'block';
+        } else {
+            memoGroup.style.display = 'none';
+        }
+
+        // Hide send modal and show confirmation modal
+        this.modal.classList.remove('active');
+
+        confirmButton.disabled = false;
+        cancelButton.disabled = false;
+        document.getElementById('sendConfirmationModal').classList.add('active');
+    }
+
+    /**
+     * Fills the amount input with the available balance
+     * @returns {void}
+     */
+    async fillAmount() {
+        await getNetworkParams();
+        const asset = myData.wallet.assets[this.assetSelectDropdown.value];
+        const feeInWei = (parameters.current.transactionFee || 1n * wei);
+        const maxAmount = BigInt(asset.balance) - feeInWei;
+    
+        this.amountInput.value = big2str(maxAmount > 0n ? maxAmount : 0n, 18).slice(0, -16);
+        this.amountInput.dispatchEvent(new Event('input'));
+    }
+
+    /**
+     * Updates the available balance in the send modal based on the asset
+     * @returns {void}
+     */
+    async updateAvailableBalance() {
+        const walletData = myData.wallet;
+        const assetIndex = this.assetSelectDropdown.value;
+        const balanceWarning = this.balanceWarning;
+    
+        // Check if we have any assets
+        if (!walletData.assets || walletData.assets.length === 0) {
+            this.updateBalanceDisplay(null);
+            // If no assets, amount validation will likely fail or be irrelevant.
+            // Button state should reflect this.
+            await this.refreshSendButtonDisabledState();
+            return;
+        }
+    
+        this.updateBalanceDisplay(walletData.assets[assetIndex]);
+        await this.refreshSendButtonDisabledState();
+    }
+    
+    /**
+     * Updates the balance display in the send modal based on the asset
+     * @param {object} asset - The asset to update the balance display for
+     * @returns {void}
+     */
+    async updateBalanceDisplay(asset) {
+        if (!asset) {
+            document.getElementById('balanceAmount').textContent = '0.0000';
+            document.getElementById('balanceSymbol').textContent = '';
+            document.getElementById('transactionFee').textContent = '0.00';
+            return;
+        }
+    
+        await getNetworkParams();
+        const txFeeInLIB = ((parameters.current.transactionFee) || 1n * wei);
+        const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+        
+        // Preserve the current toggle state (LIB/USD) instead of overwriting it
+        const balanceSymbolElement = document.getElementById('balanceSymbol');
+        const currentSymbol = balanceSymbolElement.textContent;
+        const isCurrentlyUSD = currentSymbol === 'USD';
+        
+        // Only set to asset symbol if it's empty (initial state)
+        if (!currentSymbol) {
+            balanceSymbolElement.textContent = asset.symbol;
+        }
+
+        const balanceInLIB = big2str(BigInt(asset.balance), 18).slice(0, -12);
+        const feeInLIB = big2str(txFeeInLIB, 18).slice(0, -16);
+
+        // Set the base LIB values first
+        document.getElementById('balanceAmount').textContent = balanceInLIB;
+        document.getElementById('transactionFee').textContent = feeInLIB;
+        
+        // If currently showing USD, convert the displayed values
+        if (isCurrentlyUSD) {
+            const balanceAmount = document.getElementById('balanceAmount');
+            const transactionFee = document.getElementById('transactionFee');
+            
+            balanceAmount.textContent = (parseFloat(balanceInLIB) * scalabilityFactor).toString();
+            transactionFee.textContent = (parseFloat(feeInLIB) * scalabilityFactor).toString();
+        }
+    }
+    
+    /**
+     * Updates the send addresses for the first asset
+     * @returns {void}
+     */
+    updateSendAddresses() {
+        const walletData = myData.wallet
+        const assetIndex = document.getElementById('sendAsset').value;
+        // TODO: why is this commented out? are we not using it in the if block?
+    //    const addressSelect = document.getElementById('sendFromAddress');
+    
+        // Check if we have any assets
+        if (!walletData.assets || walletData.assets.length === 0) {
+            addressSelect.innerHTML = '<option value="">No addresses available</option>';
+            this.updateAvailableBalance();
+            return;
+        }
+    
+        // Update available balance display
+        this.updateAvailableBalance();
+    }
+
+    /**
+     * Refreshes the disabled state of the send button based on the username and amount
+     * @returns {Promise<void>}
+     */
+    async refreshSendButtonDisabledState() {
+        const sendToAddressError = document.getElementById('sendToAddressError');
+        // Address is valid if its error/status message is visible and set to 'found'.
+        const isAddressConsideredValid = sendToAddressError.style.display === 'inline' && sendToAddressError.textContent === 'found';
+        //console.log(`isAddressConsideredValid ${isAddressConsideredValid}`);
+
+        const amountInput = document.getElementById('sendAmount');
+        const amount = amountInput.value;
+        const assetIndex = document.getElementById('sendAsset').value;
+        const balanceWarning = document.getElementById('balanceWarning');
+
+        // Check if amount is in USD and convert to LIB for validation
+        const balanceSymbol = document.getElementById('balanceSymbol');
+        const isUSD = balanceSymbol.textContent === 'USD';
+        let amountForValidation = amount;
+        
+        if (isUSD && amount) {
+            await getNetworkParams();
+            const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+            amountForValidation = parseFloat(amount) / scalabilityFactor;
+        }
+
+        // convert amount to bigint
+        const amountBigInt = bigxnum2big(wei, amountForValidation.toString());
+
+        // validateBalance returns false if the amount/balance is invalid.
+        const isAmountAndBalanceValid = await validateBalance(amountBigInt, assetIndex, balanceWarning);
+        console.log(`isAmountAndBalanceValid ${isAmountAndBalanceValid}`);
+
+        const submitButton = document.querySelector('#sendForm button[type="submit"]');
+
+        // Enable button only if both conditions are met.
+        if (isAddressConsideredValid && isAmountAndBalanceValid) {
+            submitButton.disabled = false;
+        } else {
+            submitButton.disabled = true;
+        }
+    }
+
+    /**
+     * This function is called when the user clicks the toggle LIB/USD button.
+     * Updates the balance symbol and the send amount to the equivalent value in USD/LIB
+     * @param {Event} e - The event object
+     * @returns {void}
+     */
+    async handleToggleBalance(e) {
+        e.preventDefault();
+        const balanceSymbol = document.getElementById('balanceSymbol');
+        balanceSymbol.textContent = balanceSymbol.textContent === 'LIB' ? 'USD' : 'LIB';
+        const sendAmount = document.getElementById('sendAmount');
+        const balanceAmount = document.getElementById('balanceAmount');
+        const transactionFee = document.getElementById('transactionFee');
+
+        // check the context value of the button to determine if it's LIB or USD
+        const isLib = balanceSymbol.textContent === 'LIB';
+
+        // get the scalability factor for LIB/USD conversion
+        await getNetworkParams();
+        const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+
+        // Get the raw values in LIB format
+        const asset = myData.wallet.assets[this.assetSelectDropdown.value];
+        const txFeeInWei = (parameters.current.transactionFee || 1n * wei);
+        const balanceInLIB = big2str(BigInt(asset.balance), 18).slice(0, -12);
+        const feeInLIB = big2str(txFeeInWei, 18).slice(0, -16);
+
+        // if isLib is false, convert the sendAmount to USD
+        if (!isLib) {
+            sendAmount.value = (sendAmount.value * scalabilityFactor);
+            balanceAmount.textContent = '$' + (parseFloat(balanceInLIB) * scalabilityFactor).toString();
+            transactionFee.textContent = '$' + (parseFloat(feeInLIB) * scalabilityFactor).toString();
+        } else {
+            sendAmount.value = (sendAmount.value / scalabilityFactor);
+            balanceAmount.textContent = balanceInLIB;
+            transactionFee.textContent = feeInLIB;
+        }
+    }
+}
+
+const sendModal = new SendModal();
+
 
 /**
  * Remove failed transaction from the contacts messages, pending, and wallet history
@@ -7986,8 +8506,9 @@ async function checkPendingTransactions() {
             //console.log(`DEBUG: txid ${txid} endpointPath: ${endpointPath}`);
             const res = await queryNetwork(endpointPath);
             //console.log(`DEBUG: txid ${txid} res: ${JSON.stringify(res)}`);
-
-            if (submittedts < thirtySecondsAgo && res.transaction === null) {
+            if (submittedts < thirtySecondsAgo && 
+                (res.transaction === null || Object.keys(res.transaction).length === 0)
+            ) {
                 console.error(`DEBUG: txid ${txid} timed out, removing completely`);
                 // remove the pending tx from the pending array
                 myData.pending.splice(i, 1);
@@ -8003,9 +8524,6 @@ async function checkPendingTransactions() {
                         username: pendingTxInfo.username,
                         address: pendingTxInfo.address
                     });
-
-                    // update wallet balances
-                    await updateWalletBalances();
                 }
 
                 if (res?.transaction?.type === 'withdraw_stake') {
@@ -8023,13 +8541,25 @@ async function checkPendingTransactions() {
                     showToast(`${type === 'deposit_stake' ? 'Stake' : 'Unstake'} transaction successful`, 5000, 'success');
                     // refresh only if validator modal is open
                     if (document.getElementById('validatorModal').classList.contains('active')) {
-                        closeValidatorModal();
-                        openValidatorModal();
+                        validatorStakingModal.close();
+                        validatorStakingModal.open();
                     }
                 }
 
                 if (type === 'toll') {
                     console.log(`Toll transaction successfully processed!`);
+                }
+
+                if (type === 'update_toll_required') {
+                    console.log(`DEBUG: update_toll_required transaction successfully processed!`);
+                }
+
+                if (type === 'read') {
+                    console.log(`DEBUG: read transaction successfully processed!`);
+                }
+
+                if (type === 'reclaim_toll') {
+                    console.log(`DEBUG: reclaim_toll transaction successfully processed!`);
                 }
             }
             else if (res?.transaction?.success === false) {
@@ -8044,13 +8574,25 @@ async function checkPendingTransactions() {
                     // Show toast notification with the failure reason
                     if (type === 'withdraw_stake') {
                         showToast(`Unstake failed: ${failureReason}`, 0, "error");
-                } else if (type === 'deposit_stake') {
+                    } else if (type === 'deposit_stake') {
                         showToast(`Stake failed: ${failureReason}`, 0, "error");
                     } 
                     else if (type === 'toll') {
                         showToast(`Toll submission failed! Reverting to old toll: ${tollModal.oldToll}. Failure reason: ${failureReason}. `, 0, "error");
                         // revert the local myData.settings.toll to the old value
                         tollModal.editMyDataToll(tollModal.oldToll);
+                    } 
+                    else if (type === 'update_toll_required') {
+                        showToast(`Update contact status failed: ${failureReason}. Reverting contact to old status.`, 0, "error");
+                        // revert the local myData.contacts[toAddress].friend to the old value
+                        myData.contacts[pendingTxInfo.to].friend = pendingTxInfo.friend;
+                    } else if (type === 'read') {
+                        showToast(`Read transaction failed: ${failureReason}`, 0, "error");
+                        // revert the local myData.contacts[toAddress].timestamp to the old value
+                        myData.contacts[pendingTxInfo.to].timestamp = pendingTxInfo.oldContactTimestamp;
+                    }
+                    else if (type === 'reclaim_toll') {
+                        showToast(`Reclaim toll failed: ${failureReason}`, 0, "error");
                     }
                     else { // for messages, transfer etc.
                         showToast(failureReason, 0, "error");
@@ -8058,7 +8600,7 @@ async function checkPendingTransactions() {
 
                     const toAddress = pendingTxInfo.to;
                     updateTransactionStatus(txid, toAddress, 'failed', type);
-                    refreshCurrentView(txid);
+                    chatModal.refreshCurrentView(txid);
                 }
                 // Remove from pending array
                 myData.pending.splice(i, 1);
@@ -8070,8 +8612,8 @@ async function checkPendingTransactions() {
 
                     if (document.getElementById('validatorModal').classList.contains('active')) {
                         // refresh the validator modal
-                        closeValidatorModal();
-                        openValidatorModal();
+                        validatorStakingModal.close();
+                        validatorStakingModal.open();
                     }
                 }
             } else {
@@ -8079,45 +8621,8 @@ async function checkPendingTransactions() {
             }
         }
     }
-}
-
-/**
- * Refresh the current view based on which screen the user is viewing.
- * Primarily called when a pending transaction fails to remove it from the UI.
- * Updates UI components only for the view that's currently active.
- * @param {string} [txid] - Optional transaction ID that failed and needs removal.
- */
-function refreshCurrentView(txid) { // contactAddress is kept for potential future use but not needed for this txid-based logic
-    const chatModal = document.getElementById('chatModal');
-    const chatsScreen = document.getElementById('chatsScreen');
-    const historyModal = document.getElementById('historyModal');
-    const messagesList = chatModal ? chatModal.querySelector('.messages-list') : null;
-
-    // 1. Refresh History Modal if active
-    if (historyModal && historyModal.classList.contains('active')) {
-        console.log("DEBUG: Refreshing transaction history modal due to transaction failure.");
-        updateTransactionHistory();
-    }
-    // 2. Refresh Chat Modal if active AND the failed txid's message is currently rendered
-    if (chatModal && chatModal.classList.contains('active') && txid && messagesList) {
-        // Check if an element with the specific data-txid exists within the message list
-        const messageElement = messagesList.querySelector(`[data-txid="${txid}"]`);
-
-        if (messageElement) {
-            // If the element exists, the failed message is visible in the open chat. Refresh the modal.
-            console.log(`DEBUG: Refreshing active chat modal because failed txid ${txid} was found in the view.`);
-            appendChatModal(); // This will redraw the messages based on the updated data (where the failed tx is removed)
-        } else {
-            // The failed txid doesn't correspond to a visible message in the *currently open* chat modal. No UI refresh needed for the modal itself.
-            console.log(`DEBUG: Skipping chat modal refresh. Failed txid ${txid} not found in the active modal's message list.`);
-        }
-    }
-    // 3. Refresh Chat List if active
-    if (chatsScreen && chatsScreen.classList.contains('active')) {
-        console.log("DEBUG: Refreshing chat list view due to transaction failure.");
-        updateChatList();
-    }
-    // No other active view to refresh in this context
+    // update wallet balances
+    updateWalletBalances();
 }
 
 /**

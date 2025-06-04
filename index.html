@@ -654,6 +654,11 @@
               id="chatEditButton"
               aria-label="Edit contact"
             ></button>
+            <button
+              class="icon-button add-friend-icon"
+              id="addFriendButtonChat"
+              aria-label="Add friend"
+            ></button>
           </div>
         </div>
         <div class="messages-container">
@@ -711,7 +716,7 @@
             ></button>
             <button
               class="icon-button add-friend-icon"
-              id="addFriendButton"
+              id="addFriendButtonContactInfo"
               aria-label="Add friend"
             ></button>
           </div>
@@ -776,6 +781,52 @@
           "
         >
         </a>
+      </div>
+
+      <!-- Friend Modal -->
+      <div class="modal" id="friendModal">
+        <div class="modal-header">
+          <button class="back-button" id="closeFriendModal"></button>
+          <div class="modal-title">Friend Status</div>
+        </div>
+        <div class="modal-content">
+          <form id="friendForm">
+            <div class="radio-group">
+              <label class="radio-option status-3">
+                <input type="radio" name="friendStatus" value="3" checked />
+                <div class="radio-content">
+                  <span class="radio-label">Friend</span>
+                  <span class="radio-description"
+                    >Share my profile info and no toll required</span
+                  >
+                </div>
+              </label>
+              <label class="radio-option status-2">
+                <input type="radio" name="friendStatus" value="2" />
+                <div class="radio-content">
+                  <span class="radio-label">Acquaintance</span>
+                  <span class="radio-description">No toll required</span>
+                </div>
+              </label>
+              <label class="radio-option status-1">
+                <input type="radio" name="friendStatus" value="1" />
+                <div class="radio-content">
+                  <span class="radio-label">Other</span>
+                  <span class="radio-description">Toll required</span>
+                </div>
+              </label>
+              <label class="radio-option status-0">
+                <input type="radio" name="friendStatus" value="0" />
+                <div class="radio-content">
+                  <span class="radio-label">Blocked</span>
+                  <span class="radio-description">Cannot send me messages</span>
+                </div>
+              </label>
+            </div>
+            <button type="submit" class="update-button">Update</button>
+          </form>
+          <a class="last-item" href="#" style="display: block; width: 0; height: 0; border: none; background: none;"></a>
+        </div>
       </div>
 
       <!-- Receive Modal -->
@@ -1395,7 +1446,7 @@
       <div class="modal fixed-header" id="validatorModal">
         <div class="modal-header">
           <button class="back-button" id="closeValidatorModal"></button>
-          <div class="modal-title">Validator Options</div>
+          <div class="modal-title">Validator Staking</div>
         </div>
         <div class="modal-content">
           <!-- Loading State -->
@@ -1564,7 +1615,7 @@
               <label for="newTollAmountInput">Set New Toll Amount</label>
               <div class="form-text help-text">
                 Sets a new toll amount a sender must pay to send a message or
-                payment to you.
+                payment to you. All tolls are received in LIB. If you enter a USD amount, you will receive the equivalent LIB value at market price.
               </div>
               <div class="amount-container">
                 <input
