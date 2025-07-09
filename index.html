@@ -56,66 +56,44 @@
     <script src="./external/qr.js" defer></script>
     <script src="./network.js"></script>
     <link rel="stylesheet" href="./styles.css" />
-    <link rel="manifest" href="./manifest.json" />
+    <!-- <link rel="manifest" href="./manifest.json" /> -->
   </head>
   <body>
     <script src="./app.js" type="module" defer></script>
     <div class="container">
       <header class="header" id="header">
         <div id="logo">
-          <a
-            href="https://liberdus.com"
-            target="_blank"
-            title="Visit Liberdus website"
-            class="logo-link"
+          <a href="https://liberdus.com" target="_blank" title="Visit Liberdus website" class="logo-link"
             ><img src="./media/liberdus_logo_50.png"
           /></a>
         </div>
         <div class="app-name">Liberdus</div>
         <div class="header-icons">
           <div class="offline-indicator" id="offlineIndicator">Offline</div>
-          <div id="wsStatusIndicator" class="ws-status-indicator">WebSocket</div>
+          <div id="wsStatusIndicator" class="ws-status-indicator" style="display: none">WebSocket</div>
           <button class="icon-button" id="toggleMenu"></button>
         </div>
       </header>
 
       <div class="welcome-screen" id="welcomeScreen">
-        <a
-          href="https://liberdus.com"
-          target="_blank"
-          title="Visit Liberdus website"
-          class="logo-link"
-        >
-          <img
-            src="./media/liberdus_logo_250.png"
-            alt="Liberdus Logo"
-            style="margin-bottom: 20px"
-          />
+        <a href="https://liberdus.com" target="_blank" title="Visit Liberdus website" class="logo-link">
+          <img src="./media/liberdus_logo_250.png" alt="Liberdus Logo" style="margin-bottom: 20px" />
         </a>
         <h1>
           Liberdus<br />
-          <div
-            style="font-size: 0.8rem; margin-top: 1px; text-align: center"
-            id="networkNameDisplay"
-          ></div>
+          <div style="font-size: 0.8rem; margin-top: 1px; text-align: center" id="networkNameDisplay"></div>
         </h1>
         <div class="welcome-buttons">
           <button id="signInButton" class="secondary-button hidden">Sign In</button>
           <button id="createAccountButton" class="secondary-button hidden">Create Account</button>
           <button id="importAccountButton" class="secondary-button hidden">Restore Account</button>
-          <button id="addToHomeScreenButton" class="secondary-button hidden">Install</button>
+          <!-- <button id="addToHomeScreenButton" class="secondary-button hidden">Install</button> -->
         </div>
         <div style="font-size: 0.8rem; margin-top: 10px; text-align: center">
           Version <span id="versionDisplay"></span>
         </div>
         <!-- Add a unused anchor tag with nothing in it and add a class to it so can't shift and end up on another modal. Should still be displayed but will just show nothing -->
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-          id="welcomeScreenLastItem"
-        >
-        </a>
+        <a class="last-item" href="#" id="welcomeScreenLastItem"> </a>
       </div>
 
       <div class="app-screen" id="chatsScreen">
@@ -194,12 +172,7 @@
           <button class="nav-button" id="switchToWallet">Wallet</button>
         </div>
         <!-- set focus on last-item in the footer -->
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </footer>
 
       <!-- New Chat Modal -->
@@ -212,8 +185,7 @@
           <form id="newChatForm">
             <div class="form-group">
               <label for="recipient"
-                >Recipient
-                <span id="chatRecipientError" style="color: #dc3545; display: none"></span
+                >Recipient <span id="chatRecipientError" style="color: #dc3545; display: none"></span
               ></label>
               <input
                 type="text"
@@ -227,12 +199,7 @@
             </div>
             <button type="submit" class="update-button">Continue</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -243,27 +210,21 @@
           <div class="modal-title">Menu</div>
         </div>
         <ul class="menu-list">
-          <li class="menu-item" id="openAccountForm">Profile</li>
-          <li class="menu-item" id="openToll">Toll</li>
-          <li class="menu-item" id="openExportForm">Backup</li>
-          <li class="menu-item" id="openNetwork">Gateway</li>
-          <li class="menu-item" id="openValidator">Validator</li>
-          <li class="menu-item" id="openInvite">Invite</li>
+          <li class="menu-item" id="openAccountForm" data-icon="user">Profile</li>
+          <li class="menu-item" id="openToll" data-icon="dollar-sign">Toll</li>
+          <li class="menu-item" id="openExportForm" data-icon="download">Backup</li>
+          <li class="menu-item" id="openValidator" data-icon="shield">Validator</li>
+          <li class="menu-item" id="openInvite" data-icon="mail">Invite</li>
           <!--                <li class="menu-item" id="openSettings">Settings</li> -->
-          <li class="menu-item" id="openExplorer">Explorer</li>
-          <li class="menu-item" id="openMonitor">Network</li>
+          <li class="menu-item" id="openExplorer" data-icon="search">Explorer</li>
+          <li class="menu-item" id="openMonitor" data-icon="globe">Network</li>
           <!--<li class="menu-item" id="openImportFormMenu">Import</li>-->
-          <li class="menu-item" id="openRemoveAccount">Remove</li>
-          <li class="menu-item" id="openContact">Contact Us</li>
-          <li class="menu-item" id="openAbout">About</li>
-          <li class="menu-item" id="handleSignOut">Sign Out</li>
+          <li class="menu-item" id="openRemoveAccount" data-icon="trash-2">Remove</li>
+          <li class="menu-item" id="openContact" data-icon="phone">Contact Us</li>
+          <li class="menu-item" id="openAbout" data-icon="info">About</li>
+          <li class="menu-item" id="handleSignOut" data-icon="log-out">Sign Out</li>
         </ul>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Contact Modal -->
@@ -275,16 +236,9 @@
         <div class="form-container">
           <div style="padding: 1rem">
             <p>Please contact our team to report bugs or make suggestions.</p>
-            <button id="submitFeedback" class="update-button" style="margin-top: 1rem">
-              Submit Feedback
-            </button>
+            <button id="submitFeedback" class="update-button" style="margin-top: 1rem">Submit Feedback</button>
           </div>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -295,59 +249,45 @@
           <div class="modal-title">About Liberdus</div>
         </div>
         <div class="form-container">
-          <div style="padding: 1rem">
-            <img
-              src="./media/liberdus_logo_250.png"
-              alt="Liberdus Logo"
-              style="margin-bottom: 20px; width: 100%; max-width: 200px"
-            />
-            <p>Liberdus is a decentralized messaging and wallet application.</p>
-            <br /><br />
-            <div style="font-size: 0.8rem; margin-top: 10px; text-align: center">
-              Version <span id="versionDisplayAbout"></span>
+          <div class="about-content">
+            <img class="about-logo" src="./media/liberdus_logo_250.png" alt="Liberdus Logo" />
+            <p class="about-description">Liberdus is a decentralized messaging and wallet application.</p>
+
+            <div class="about-info-section">
+              <div class="about-info-item">Version <span id="versionDisplayAbout"></span></div>
+              <div class="about-info-item">Network Name: <span id="networkNameAbout"></span></div>
+              <div class="about-info-item">
+                Net ID:<br />
+                <span class="about-net-id" id="netIdAbout"></span>
+              </div>
             </div>
-            <div style="font-size: 0.8rem; margin-top: 10px; text-align: center">
-              Network Name: <span id="networkNameAbout"></span>
+
+            <div class="about-links-section">
+              <a class="about-link" href="https://liberdus.com" target="_blank">Liberdus.com</a>
+              <a class="about-link" href="https://github.com/liberdus" target="_blank">Source Code</a>
             </div>
-            <div style="font-size: 0.8rem; margin-top: 10px; text-align: center">
-              Net ID:<br />
-              <span style="font-size: 0.7rem" id="netIdAbout"></span>
+
+            <div class="about-source-links">
+              <a class="about-link" href="index.html.txt" target="_blank">index.html</a>
+              <a class="about-link" href="styles.css" target="_blank">styles.css</a>
+              <a class="about-link" href="app.js" target="_blank">app.js</a>
+              <a class="about-link" href="crypto.js" target="_blank">crypto.js</a>
+              <a class="about-link" href="lib.js" target="_blank">lib.js</a>
+              <a class="about-link" href="network.js" target="_blank">network.js</a>
             </div>
-            <br /><br />
-            <div>
-              <a href="https://liberdus.com" target="_blank">Liberdus.com</a>
+
+            <div class="about-external-links">
+              <a class="about-link" href="./external/noble-post-quantum.js" target="_blank">noble-post-quantum.js</a>
+              <a class="about-link" href="./external/noble-secp256k1.js" target="_blank">noble-secp256k1.js</a>
+              <a class="about-link" href="./external/noble-ciphers.js" target="_blank">noble-ciphers.js</a>
+              <a class="about-link" href="./external/blake2b.js" target="_blank">blake2b.js</a>
+              <a class="about-link" href="./external/keccak256.js" target="_blank">keccak256.js</a>
+              <a class="about-link" href="./external/stringify-shardus.js" target="_blank">stringify-shardus.js</a>
+              <a class="about-link" href="./external/qr.js" target="_blank">qr.js</a>
             </div>
-            <p>
-              <a href="https://github.com/liberdus" target="_blank">Source Code</a>
-            </p>
-            <br />
-            <p>
-              <a href="index.html.txt" target="_blank">index.html</a>
-              <a href="styles.css" target="_blank">styles.css</a>
-              <a href="app.js" target="_blank">app.js</a>
-            </p>
-            <br />
-            <a href="network.js" target="_blank">network.js</a>
-            <a href="lib.js" target="_blank">lib.js</a>
-            <a href="service-worker.js" target="_blank">service-worker.js</a>
-            <br />
-            <p>
-              <a href="./external/noble-post-quantum.js" target="_blank">noble-post-quantum.js</a>
-              <a href="./external/noble-secp256k1.js" target="_blank">noble-secp256k1.js</a>
-              <a href="./external/noble-ciphers.js" target="_blank">noble-ciphers.js</a>
-              <a href="./external/blake2b.js" target="_blank">blake2b.js</a>
-              <a href="./external/keccak256.js" target="_blank">keccak256.js</a>
-              <a href="./external/stringify-shardus.js" target="_blank">stringify-shardus.js</a>
-              <a href="./external/qrcode.js" target="_blank">qrcode.js</a>
-            </p>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Sign In Modal -->
@@ -361,30 +301,16 @@
             <div class="form-group">
               <label for="username"
                 >Select Account
-                <span
-                  id="usernameNotFound"
-                  style="color: #dc3545; display: none; display: inline"
-                ></span
+                <span id="usernameNotFound" style="color: #dc3545; display: none; display: inline"></span
               ></label>
               <select id="username" class="form-control" required></select>
             </div>
             <button type="submit" class="update-button" disabled>Sign In</button>
-            <button
-              type="button"
-              id="removeAccountButton"
-              class="secondary-button"
-              style="display: none"
-            >
+            <button type="button" id="removeAccountButton" class="secondary-button" style="display: none">
               Remove
             </button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-            id="signInModalLastItem"
-          >
-          </a>
+          <a class="last-item" href="#" id="signInModalLastItem"> </a>
         </div>
       </div>
 
@@ -399,9 +325,7 @@
             <div class="form-group">
               <label for="newUsername">
                 Username
-                <span id="newUsernameAvailable" style="color: #28a745; display: none">
-                  available
-                </span>
+                <span id="newUsernameAvailable" style="color: #28a745; display: none"> available </span>
               </label>
               <div style="position: relative">
                 <input
@@ -425,8 +349,7 @@
             <div id="privateKeySection" style="display: none">
               <div class="form-group">
                 <label for="newPrivateKey"
-                  >Private Key
-                  <span id="newPrivateKeyError" style="color: #dc3545; display: none"></span
+                  >Private Key <span id="newPrivateKeyError" style="color: #dc3545; display: none"></span
                 ></label>
                 <div style="position: relative">
                   <input
@@ -435,26 +358,17 @@
                     class="form-control"
                     placeholder="Optional private key in hex format"
                   />
-                  <button
-                    type="button"
-                    id="togglePrivateKeyVisibility"
-                    class="password-toggle-btn"
-                  ></button>
+                  <button type="button" id="togglePrivateKeyVisibility" class="password-toggle-btn"></button>
                 </div>
                 <small>
-                  If you want to use an existing private key enter it here. Otherwise you can leave
-                  this empty to have a private key automatically generated.
+                  If you want to use an existing private key enter it here. Otherwise you can leave this empty to have a
+                  private key automatically generated.
                 </small>
               </div>
             </div>
             <button type="submit" class="update-button" disabled>Create Account</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -473,28 +387,23 @@
             </div>
             <div class="form-group">
               <label for="email">Email</label>
-              <input type="text" id="email" class="form-control" />
+              <input type="email" id="email" class="form-control" />
             </div>
             <div class="form-group">
               <label for="phone">Phone</label>
-              <input type="text" id="phone" class="form-control" />
+              <input type="tel" id="phone" class="form-control" />
             </div>
             <div class="form-group">
               <label for="linkedin">LinkedIn</label>
               <input type="text" id="linkedin" class="form-control" />
             </div>
             <div class="form-group">
-              <label for="x">X</label>
+              <label for="x">X-Twitter</label>
               <input type="text" id="x" class="form-control" />
             </div>
             <button type="submit" class="update-button">Update Profile</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -508,13 +417,7 @@
           <form id="importForm">
             <div class="form-group">
               <label for="importFile">Select File</label>
-              <input
-                type="file"
-                id="importFile"
-                class="form-control"
-                accept="application/json"
-                required
-              />
+              <input type="file" id="importFile" class="form-control" accept="application/json" required />
             </div>
             <div class="form-group">
               <label for="importPassword">Password (if encrypted)</label>
@@ -527,12 +430,7 @@
             </div>
             <button type="submit" class="update-button">Load Account</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -545,53 +443,34 @@
             <div class="modal-title"></div>
           </div>
           <!-- Add header actions container for the edit button and send money button -->
-
           <div class="header-actions">
-            <button
-              class="icon-button send-money-icon"
-              id="chatSendMoneyButton"
-              aria-label="Send money"
-            ></button>
-            <button
-              class="icon-button edit-icon"
-              id="chatEditButton"
-              aria-label="Edit contact"
-            ></button>
-            <button
-              class="icon-button add-friend-icon"
-              id="addFriendButtonChat"
-              aria-label="Add friend"
-            ></button>
+            <button class="icon-button edit-icon" id="chatEditButton" aria-label="Edit contact"></button>
+            <button class="icon-button send-money-icon" id="chatSendMoneyButton" aria-label="Send money"></button>
+            <button class="icon-button add-friend-icon" id="addFriendButtonChat" aria-label="Add friend"></button>
           </div>
         </div>
         <div class="messages-container">
           <div class="messages-list"></div>
         </div>
         <div class="message-input-container">
-          <div class="message-input-wrapper">
-            <textarea
-              class="message-input"
-              placeholder="Type a message..."
-              maxlength="2000"
-            ></textarea>
-            <div class="toll-container">
-              <span class="toll-label">Toll:</span>
-              <span class="toll-value" id="tollValue"></span>
+          <div class="message-byte-counter"></div>
+          <div class="message-input-row">
+            <div class="message-input-wrapper">
+              <textarea class="message-input" placeholder="Type a message..."></textarea>
+              <div class="toll-container">
+                <span class="toll-label">Toll:</span>
+                <span class="toll-value" id="tollValue"></span>
+              </div>
             </div>
+            <input type="hidden" id="retryOfTxId" />
+            <button class="send-button" id="handleSendMessage">
+              <svg viewBox="0 0 24 24">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+              </svg>
+            </button>
           </div>
-          <input type="hidden" id="retryOfTxId" />
-          <button class="send-button" id="handleSendMessage">
-            <svg viewBox="0 0 24 24">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </svg>
-          </button>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Contact Info Modal -->
@@ -601,16 +480,8 @@
           <div class="modal-title">Contact Info</div>
           <!-- Add header actions container -->
           <div class="header-actions">
-            <button
-              class="icon-button chat-icon"
-              id="contactInfoChatButton"
-              aria-label="Open chat"
-            ></button>
-            <button
-              class="icon-button send-money-icon"
-              id="contactInfoSendButton"
-              aria-label="Send money"
-            ></button>
+            <button class="icon-button chat-icon" id="contactInfoChatButton" aria-label="Open chat"></button>
+            <button class="icon-button send-money-icon" id="contactInfoSendButton" aria-label="Send money"></button>
             <button
               class="icon-button add-friend-icon"
               id="addFriendButtonContactInfo"
@@ -633,7 +504,7 @@
               </div>
             </template>
             <!-- Contact info fields -->
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">Username</div>
               <div class="contact-info-value" id="contactInfoUsername"></div>
             </div>
@@ -641,37 +512,38 @@
               <div class="contact-info-label">Name</div>
               <div class="contact-info-value-container">
                 <div class="contact-info-value" id="contactInfoName"></div>
-                <button
-                  class="icon-button edit-icon"
-                  id="nameEditButton"
-                  aria-label="Edit name"
-                ></button>
+                <button class="icon-button edit-icon" id="nameEditButton" aria-label="Edit name"></button>
               </div>
             </div>
-            <div class="contact-info-item">
-              <div class="contact-info-label">Email</div>
-              <div class="contact-info-value" id="contactInfoEmail"></div>
+            <div class="contact-info-item" style="display: none">
+              <div class="contact-info-label">Provided Name</div>
+              <div class="contact-info-value" id="contactInfoProvidedName"></div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
+              <div class="contact-info-label">Email</div>
+              <div class="contact-info-value">
+                <a href="#" id="contactInfoEmail" class="contact-info-link" target="_blank" rel="noopener noreferrer"></a>
+              </div>
+            </div>
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">Phone</div>
               <div class="contact-info-value" id="contactInfoPhone"></div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">LinkedIn</div>
-              <div class="contact-info-value" id="contactInfoLinkedin"></div>
+              <div class="contact-info-value">
+                <a href="#" id="contactInfoLinkedin" class="contact-info-link" target="_blank" rel="noopener noreferrer"></a>
+              </div>
             </div>
-            <div class="contact-info-item">
-              <div class="contact-info-label">X</div>
-              <div class="contact-info-value" id="contactInfoX"></div>
+            <div class="contact-info-item" style="display: none">
+              <div class="contact-info-label">X-Twitter</div>
+              <div class="contact-info-value">
+                <a href="#" id="contactInfoX" class="contact-info-link" target="_blank" rel="noopener noreferrer"></a>
+              </div>
             </div>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Friend Modal -->
@@ -693,15 +565,15 @@
               <label class="radio-option status-2">
                 <input type="radio" name="friendStatus" value="2" />
                 <div class="radio-content">
-                  <span class="radio-label">Acquaintance</span>
+                  <span class="radio-label">Connection</span>
                   <span class="radio-description">No toll required</span>
                 </div>
               </label>
               <label class="radio-option status-1">
                 <input type="radio" name="friendStatus" value="1" />
                 <div class="radio-content">
-                  <span class="radio-label">Other</span>
-                  <span class="radio-description">Toll required</span>
+                  <span class="radio-label">Tolled</span>
+                  <span class="radio-description">Toll required to send me messages</span>
                 </div>
               </label>
               <label class="radio-option status-0">
@@ -714,11 +586,7 @@
             </div>
             <button type="submit" class="update-button">Update</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          ></a>
+          <a class="last-item" href="#"></a>
         </div>
       </div>
 
@@ -769,7 +637,7 @@
           <div class="form-group">
             <label for="receiveAmount">Amount (Optional)</label>
             <input
-              type="number"
+              type="text"
               id="receiveAmount"
               class="form-control"
               placeholder="Enter amount"
@@ -787,12 +655,7 @@
             ></textarea>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- History Modal -->
@@ -810,12 +673,7 @@
             <!-- Transactions will be populated here -->
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Send Asset Form Modal -->
@@ -832,15 +690,14 @@
             </div>
             <div class="form-group">
               <label for="sendToAddress"
-                >Recipient
-                <span id="sendToAddressError" style="color: #dc3545; display: none"></span
+                >Recipient <span id="sendToAddressError" style="color: #dc3545; display: none"></span
               ></label>
               <div style="display: flex; align-items: center; gap: 0.5rem">
                 <input
                   type="text"
                   id="sendToAddress"
                   class="form-control"
-                  placeholder="Enter username or address"
+                  placeholder="Enter username"
                   required
                   pattern="[a-zA-Z0-9]*"
                   inputmode="text"
@@ -859,13 +716,7 @@
                     />
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  id="scanQRButton"
-                  class="icon-button"
-                  title="Scan QR Code"
-                  style="flex-shrink: 0"
-                >
+                <button type="button" id="scanQRButton" class="icon-button" title="Scan QR Code" style="flex-shrink: 0">
                   <svg viewBox="0 0 24 24" width="24" height="24" style="fill: #007bff">
                     <path
                       d="M3,3 L10,3 L10,10 L3,10 Z M5,5 L5,8 L8,8 L8,5 Z M14,3 L21,3 L21,10 L14,10 Z M16,5 L16,8 L19,8 L19,5 Z M3,14 L10,14 L10,21 L3,21 Z M5,16 L5,19 L8,19 L8,16 Z M14,14 L21,14 L21,21 L14,21 Z M16,16 L16,19 L19,19 L19,16 Z M11,3 L13,3 L13,10 L11,10 Z M11,14 L13,14 L13,21 L11,21 Z M3,11 L10,11 L10,13 L3,13 Z M14,11 L21,11 L21,13 L14,13 Z"
@@ -877,13 +728,7 @@
                   type="file"
                   id="qrFileInput"
                   accept="image/*"
-                  style="
-                    display: none;
-                    position: absolute;
-                    width: 1px;
-                    height: 1px;
-                    overflow: hidden;
-                  "
+                  style="display: none; position: absolute; width: 1px; height: 1px; overflow: hidden"
                   aria-hidden="true"
                 />
               </div>
@@ -892,11 +737,9 @@
               <label for="sendAmount">Amount</label>
               <div class="amount-container">
                 <input
-                  type="number"
+                  type="text"
                   id="sendAmount"
                   class="form-control"
-                  step="any"
-                  min="0.000000000000000001"
                   required
                 />
                 <!-- add button to toggle between LIB and USD -->
@@ -907,17 +750,20 @@
               <div id="balanceWarning" class="balance-warning"></div>
               <div id="availableBalance" class="available-balance">
                 <div class="balance-info">
-                  <span
-                    >Available: <span id="balanceAmount">0.00</span>
-                    <span id="availableBalanceSymbol"></span
-                  ></span>
-                  <span class="fee-info">Fee: <span id="transactionFee">0.00</span></span>
+                  <span>Available: <span id="balanceAmount">0.00 LIB</span></span>
+                  <span class="fee-info">Fee: <span id="transactionFee">0.00 LIB</span></span>
                 </div>
               </div>
             </div>
             <div class="form-group">
-              <label for="sendMemo">Memo (Optional)</label>
-              <textarea id="sendMemo" class="form-control" maxlength="2000"></textarea>
+              <label for="sendMemo">
+                Memo (Optional)
+                <span class="memo-byte-counter" style="font-size: 12px; margin-left: 8px; font-weight: normal; display: none;"></span>
+              </label>
+              <textarea id="sendMemo" class="form-control"></textarea>
+              <div class="toll-container" id="memoTollContainer">
+                <span class="toll-memo" id="tollMemo"></span>
+              </div>
             </div>
             <input type="hidden" id="retryOfPaymentTxId" />
             <button type="submit" class="update-button">Send</button>
@@ -935,12 +781,7 @@
             </div>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Send Asset Confirmation Modal -->
@@ -958,6 +799,7 @@
             <div class="form-group">
               <label>Amount</label>
               <div id="confirmAmount" class="confirm-value"></div>
+              <div id="confirmAmountUSD" class="confirm-value-secondary usd-equivalent"></div>
             </div>
             <div class="form-group">
               <label>Asset</label>
@@ -971,12 +813,7 @@
           <button id="confirmSendButton" class="update-button">Confirm Send</button>
           <button id="cancelSendButton" class="secondary-button">Cancel</button>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Export Modal -->
@@ -998,89 +835,7 @@
             </div>
             <button type="submit" class="update-button">Download Data</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
-        </div>
-      </div>
-
-      <!-- Gateway Form Modal -->
-      <div class="modal" id="gatewayModal">
-        <div class="modal-header">
-          <button class="back-button" id="closeGatewayForm"></button>
-          <div class="modal-title">Gateway Settings</div>
-        </div>
-        <div class="form-container">
-          <div id="gatewayList" class="gateway-list">
-            <!-- Gateway items will be populated here -->
-          </div>
-          <button id="addGatewayButton" class="update-button">Add Gateway</button>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
-        </div>
-      </div>
-
-      <!-- Add/Edit Gateway Modal -->
-      <div class="modal" id="addEditGatewayModal">
-        <div class="modal-header">
-          <button class="back-button" id="closeAddEditGatewayForm"></button>
-          <div class="modal-title" id="addEditGatewayTitle">Add Gateway</div>
-        </div>
-        <div class="form-container">
-          <form id="gatewayForm">
-            <input type="hidden" id="gatewayEditIndex" value="-1" />
-            <div class="form-group">
-              <label for="gatewayName">Name</label>
-              <input
-                type="text"
-                id="gatewayName"
-                class="form-control"
-                placeholder="My Gateway"
-                required
-              />
-            </div>
-            <div class="form-group">
-              <label for="gatewayProtocol">Protocol</label>
-              <select id="gatewayProtocol" class="form-control" required>
-                <option value="https">HTTPS</option>
-                <option value="http">HTTP</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="gatewayHost">Host</label>
-              <input
-                type="text"
-                id="gatewayHost"
-                class="form-control"
-                placeholder="example.com"
-                required
-              />
-            </div>
-            <div class="form-group">
-              <label for="gatewayPort">Port</label>
-              <input
-                type="number"
-                id="gatewayPort"
-                class="form-control"
-                placeholder="3030"
-                required
-              />
-            </div>
-            <button type="submit" class="update-button">Save</button>
-          </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1093,20 +848,13 @@
         <div class="form-container">
           <div style="padding: 1rem">
             <p>
-              Before removing your account, please export your account data to ensure you have a
-              backup. This action only removes the account from this device and not from the
-              network. You can use the account again after restoring it from the backup file.
+              Before removing your account, please export your account data to ensure you have a backup. This action
+              only removes the account from this device and not from the network. You can use the account again after
+              restoring it from the backup file.
             </p>
-            <button id="confirmRemoveAccount" class="update-button" style="margin-top: 1rem">
-              Remove
-            </button>
+            <button id="confirmRemoveAccount" class="update-button" style="margin-top: 1rem">Remove</button>
           </div>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1126,17 +874,13 @@
               placeholder="Search messages..."
               autocomplete="off"
               autofocus
+              maxlength="30"
             />
           </div>
           <div id="searchResults" class="chat-list">
             <!-- Results will be populated here -->
           </div>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1156,17 +900,13 @@
               placeholder="Search contacts..."
               autocomplete="off"
               autofocus
+              maxlength="30"
             />
           </div>
           <div id="contactSearchResults" class="chat-list">
             <!-- Contact search results will be populated here -->
           </div>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1183,7 +923,7 @@
               <div class="name"></div>
               <div class="subtitle"></div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">Username</div>
               <div class="contact-info-value" id="editContactUsername"></div>
             </div>
@@ -1201,29 +941,28 @@
                 </div>
               </div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" id="editContactProvidedNameContainer" style="display: none">
+              <div class="contact-info-label">Provided Name</div>
+              <div class="contact-info-value" id="editContactProvidedName"></div>
+            </div>
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">Email</div>
               <div class="contact-info-value" id="editContactEmail"></div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">Phone</div>
               <div class="contact-info-value" id="editContactPhone"></div>
             </div>
-            <div class="contact-info-item">
+            <div class="contact-info-item" style="display: none">
               <div class="contact-info-label">LinkedIn</div>
               <div class="contact-info-value" id="editContactLinkedin"></div>
             </div>
-            <div class="contact-info-item">
-              <div class="contact-info-label">X</div>
+            <div class="contact-info-item" style="display: none">
+              <div class="contact-info-label">X-Twitter</div>
               <div class="contact-info-value" id="editContactX"></div>
             </div>
           </div>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1309,11 +1048,11 @@
                 <span class="info-label">Stability Factor (USD/LIB):</span>
                 <span class="info-value" id="validator-stability-factor"></span>
               </div>
-              <div class="info-item">
+              <div class="info-item" style="display: none">
                 <span class="info-label">Market Price (USD/LIB):</span>
                 <span class="info-value" id="validator-market-price"></span>
               </div>
-              <div class="info-item">
+              <div class="info-item" style="display: none">
                 <span class="info-label">Min Stake at Market (USD):</span>
                 <span class="info-value" id="validator-market-stake-usd"></span>
               </div>
@@ -1330,12 +1069,7 @@
             <p class="action-description">Withdraw your delegated LIB from a validator node.</p>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Toll Modal -->
@@ -1363,19 +1097,16 @@
             <div class="form-group">
               <label for="newTollAmountInput">Set New Toll Amount</label>
               <div class="form-text help-text">
-                Sets a new toll amount a sender must pay to send a message or payment to you. All
-                tolls are received in LIB. If you enter a USD amount, you will receive the
-                equivalent LIB value at market price. Aside from 0 (no toll), there is a minimum
-                toll as shown below.
+                Sets a new toll amount a sender must pay to send a message or payment to you. All tolls are received in
+                LIB. If you enter a USD amount, you will receive the equivalent LIB value at market price. Aside from 0
+                (no toll), there is a minimum toll as shown below.
               </div>
               <div class="amount-container">
                 <input
-                  type="number"
+                  type="text"
                   id="newTollAmountInput"
                   class="form-control"
                   placeholder="Enter new amount"
-                  step="any"
-                  min="0"
                   required
                 />
                 <button type="button" id="toggleTollCurrency" class="toggle-balance">
@@ -1383,16 +1114,12 @@
                 </button>
               </div>
               <div id="minTollDisplay" class="form-text help-text">Minimum toll: Loading...</div>
+              <div id="tollWarningMessage" class="form-text warning-text" style="display: none"></div>
             </div>
             <button type="submit" id="saveNewTollButton" class="update-button">Save Changes</button>
           </form>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Stake Modal -->
@@ -1445,44 +1172,27 @@
                   type="file"
                   id="stakeQrFileInput"
                   accept="image/*"
-                  style="
-                    display: none;
-                    position: absolute;
-                    width: 1px;
-                    height: 1px;
-                    overflow: hidden;
-                  "
+                  style="display: none; position: absolute; width: 1px; height: 1px; overflow: hidden"
                   aria-hidden="true"
                 />
               </div>
-              <div
-                id="stakeNodeAddressWarning"
-                class="validation-warning"
-                style="display: none"
-              ></div>
+              <div id="stakeNodeAddressWarning" class="validation-warning" style="display: none"></div>
             </div>
             <div class="form-group">
               <label for="stakeAmount">Stake Amount</label>
               <div id="stakeAvailableBalanceDisplay" class="available-balance-display"></div>
               <input
-                type="number"
+                type="text"
                 id="stakeAmount"
                 class="form-control"
                 required
                 placeholder="Enter amount to stake"
-                min="0.000000000000000001"
-                step="any"
               />
               <div id="stakeAmountWarning" class="validation-warning" style="display: none"></div>
             </div>
             <button type="submit" id="submitStake" class="button full-width">Submit Stake</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          >
-          </a>
+          <a class="last-item" href="#"> </a>
         </div>
       </div>
 
@@ -1499,12 +1209,7 @@
           <div class="scan-highlight" id="scan-highlight"></div>
           <canvas id="canvas"></canvas>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
       <!-- Failed Message Modal -->
@@ -1521,19 +1226,14 @@
             </div>
           </div>
         </div>
-        <a
-          class="last-item"
-          href="#"
-          style="display: block; width: 0; height: 0; border: none; background: none"
-        >
-        </a>
+        <a class="last-item" href="#"> </a>
       </div>
 
-      <!-- Failed Payment Modal -->
-      <div class="modal modal-dialog" id="failedPaymentModal">
+      <!-- Failed Transaction Modal -->
+      <div class="modal modal-dialog" id="failedTransactionModal">
         <div class="dialog-box-content">
           <div class="modal-header">
-            <button class="back-button" id="closeFailedPaymentModal"></button>
+            <button class="back-button" id="closeFailedTransactionModal"></button>
             <div class="modal-title">Failed Transaction</div>
           </div>
           <div class="form-container">
@@ -1553,44 +1253,24 @@
         </div>
         <div class="form-container">
           <p class="modal-summary">
-            Enter an email, phone number, or both. If both are provided, an invitation will be sent
-            to each.
+            Enter an email. An invitation with your account username will be sent to the email address.
           </p>
           <form id="inviteForm">
             <div class="form-group">
               <label for="inviteEmail">Email</label>
-              <input
-                type="email"
-                id="inviteEmail"
-                class="form-control"
-                placeholder="Enter email address"
-              />
+              <input type="email" id="inviteEmail" class="form-control" placeholder="Enter email address" />
             </div>
-            <div class="form-group">
+            <div class="form-group" style="display: none">
               <label for="invitePhone">Phone Number</label>
-              <input
-                type="tel"
-                id="invitePhone"
-                class="form-control"
-                placeholder="Enter phone number"
-              />
+              <input type="tel" id="invitePhone" class="form-control" placeholder="Enter phone number" />
             </div>
             <button type="submit" class="update-button">Send Invitation</button>
           </form>
-          <a
-            class="last-item"
-            href="#"
-            style="display: block; width: 0; height: 0; border: none; background: none"
-          ></a>
+          <a class="last-item" href="#"></a>
         </div>
       </div>
 
-      <a
-        class="last-item"
-        href="#"
-        style="display: block; width: 0; height: 0; border: none; background: none"
-      >
-      </a>
+      <a class="last-item" href="#"> </a>
     </div>
     <!-- Audio element for notification sounds -->
     <audio id="notificationSound" src="media/chatSound.mp3" preload="auto"></audio>

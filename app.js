@@ -11,7 +11,7 @@ async function checkVersion() {
     newVersion = await response.text();
   } catch (error) {
     console.error('Version check failed:', error);
-    alert('Version check failed. Your Internet connection may be down.');
+    showToast('Version check failed. Your Internet connection may be down.', 0, 'error');
     // Only trigger offline UI if it's a network error
     if (!navigator.onLine || error instanceof TypeError) {
       isOnline = false;
@@ -35,7 +35,6 @@ async function checkVersion() {
       'app.js',
       'lib.js',
       'network.js',
-      'service-worker.js',
       'offline.html',
     ]);
     const newUrl = window.location.href;
@@ -98,20 +97,6 @@ async function forceReload(urls) {
   }
 }
 
-// Function to attempt locking orientation to portrait
-async function lockToPortrait() {
-  try {
-    // Attempt to lock the orientation to any portrait mode.
-    // This will throw an error if screen.orientation or screen.orientation.lock is undefined,
-    // or if the lock operation itself fails.
-    await screen.orientation.lock('portrait');
-    console.log('Screen orientation locked to portrait.');
-  } catch (error) {
-    // Log any error encountered during the attempt
-    console.warn('Could not lock screen orientation:', error);
-  }
-}
-
 // https://github.com/shardus/lib-crypto-web/blob/main/utils/stringify.js
 // Needed to stringify and parse bigints; also deterministic stringify
 //   modified to use export
@@ -139,21 +124,29 @@ import {
 // Put standalone conversion function in lib.js
 import {
   normalizeUsername,
+  normalizeName,
+  normalizePhone,
+  normalizeEmail,
+  normalizeLinkedinUsername,
+  normalizeXTwitterUsername,
   generateIdenticon,
   formatTime,
   isValidEthereumAddress,
   normalizeAddress,
   longAddress,
   utf82bin,
+  bin2utf8,
   bigxnum2big,
   big2str,
   bin2base64,
+  base642bin,
   hex2bin,
   bin2hex,
   linkifyUrls,
   escapeHtml,
   debounce,
   truncateMessage,
+  normalizeUnsignedFloat,
 } from './lib.js';
 
 const weiDigits = 18;
@@ -162,19 +155,24 @@ const pollIntervalNormal = 30000; // in millisconds
 const pollIntervalChatting = 5000; // in millseconds
 //network.monitor.url = "http://test.liberdus.com:3000"    // URL of the monitor server
 //network.explorer.url = "http://test.liberdus.com:6001"   // URL of the chain explorer
+const MAX_MEMO_BYTES = 1000; // 1000 bytes for memos
+const MAX_CHAT_MESSAGE_BYTES = 1000; // 1000 bytes for chat messages
 
 let myData = null;
 let myAccount = null; // this is set to myData.account for convience
-let isInstalledPWA = false;
 let timeSkew = 0;
+let useLongPolling = true;
+let wsManager = null;
 
 let updateWebSocketIndicatorIntervalId = null;
 let checkPendingTransactionsIntervalId = null;
+let getSystemNoticeIntervalId = null;
 //let checkConnectivityIntervalId = null;
 
 // Used in getNetworkParams function
 const NETWORK_ACCOUNT_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes in milliseconds
 const NETWORK_ACCOUNT_ID = '0000000000000000000000000000000000000000000000000000000000000000';
+const MAX_TOLL = 1_000_000; // 1M limit
 
 // TODO - get the parameters from the network
 // mock network parameters
@@ -195,7 +193,10 @@ async function checkOnlineStatus() {
   }
 }
 
-async function checkUsernameAvailability(username, address) {
+async function checkUsernameAvailability(username, address, foundAddressObject) {
+  if (foundAddressObject) {
+    foundAddressObject.address = null;
+  }
   // First check if we're offline
   if (!isOnline) {
     console.log('Checking username availability offline');
@@ -217,6 +218,9 @@ async function checkUsernameAvailability(username, address) {
     // If we have the username but address doesn't match
     if (netidAccounts?.usernames && netidAccounts.usernames[username]) {
       console.log('Username found locally but address does not match');
+      if (foundAddressObject) {
+        foundAddressObject.address = netidAccounts.usernames[username].address;
+      }
       return 'taken';
     }
 
@@ -226,8 +230,8 @@ async function checkUsernameAvailability(username, address) {
   }
 
   // Online flow - existing implementation
-  const randomGateway = getGatewayForRequest();
-  if (!randomGateway) {
+  const selectedGateway = getGatewayForRequest();
+  if (!selectedGateway) {
     console.error('No gateway available for username check');
     return 'error';
   }
@@ -236,12 +240,16 @@ async function checkUsernameAvailability(username, address) {
   const usernameHash = hashBytes(usernameBytes);
   try {
     const response = await fetch(
-      `${randomGateway.protocol}://${randomGateway.host}:${randomGateway.port}/address/${usernameHash}`
+//      `${selectedGateway.protocol}://${selectedGateway.host}:${selectedGateway.port}/address/${usernameHash}`
+      `${selectedGateway.web}/address/${usernameHash}`
     );
     const data = await response.json();
     if (data && data.address) {
       if (address && normalizeAddress(data.address) === normalizeAddress(address)) {
         return 'mine';
+      }
+      if (foundAddressObject) {
+        foundAddressObject.address = data.address;
       }
       return 'taken';
     }
@@ -263,510 +271,13 @@ function getAvailableUsernames() {
   return Object.keys(netidAccounts.usernames);
 }
 
-// This is for the sign in button on the welcome page
-function openSignInModal() {
-  // Get existing accounts
-  const { netid } = network;
-  const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
-  const netidAccounts = existingAccounts.netids[netid];
-  const usernames = netidAccounts?.usernames ? Object.keys(netidAccounts.usernames) : [];
-
-  // First show the modal so we can properly close it if needed
-  document.getElementById('signInModal').classList.add('active');
-
-  // If no accounts exist, close modal and open Create Account modal
-  if (usernames.length === 0) {
-    closeSignInModal();
-    openCreateAccountModal();
-    return;
-  }
-
-  const usernameSelect = document.getElementById('username');
-  // Populate select with usernames
-  usernameSelect.innerHTML = `
-        <option value="" disabled selected hidden>Select an account</option>
-        ${usernames.map((username) => `<option value="${username}">${username}</option>`).join('')}
-    `;
-
-  // If only one account exists, select it and trigger change event
-  if (usernames.length === 1) {
-    usernameSelect.value = usernames[0];
-    usernameSelect.dispatchEvent(new Event('change'));
-    return;
-  }
-
-  // Multiple accounts exist, show modal with select dropdown
-  const submitButton = document.querySelector('#signInForm button[type="submit"]');
-  const removeButton = document.getElementById('removeAccountButton');
-  const notFoundMessage = document.getElementById('usernameNotFound');
-
-  submitButton.disabled = true; // Keep button disabled until an account is selected
-  submitButton.textContent = 'Sign In';
-  submitButton.style.display = 'inline';
-  removeButton.style.display = 'none';
-  notFoundMessage.style.display = 'none';
-
-  const signInModalLastItem = document.getElementById('signInModalLastItem');
-  // set timeout to focus on the last item so shift+tab and tab prevention works
-  setTimeout(() => {
-    signInModalLastItem.focus();
-  }, 100);
-}
-
-async function handleRemoveAccountButton() {
-  removeAccountModal.confirmSubmit();
-}
-
-async function handleUsernameOnSignInModal() {
-  console.log('in handleUsernameOnSignInModal');
-  // Get existing accounts
-  const { netid } = network;
-  const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
-  const netidAccounts = existingAccounts.netids[netid];
-  const usernames = netidAccounts?.usernames ? Object.keys(netidAccounts.usernames) : [];
-  const usernameSelect = document.getElementById('username');
-  const submitButton = document.querySelector('#signInForm button[type="submit"]');
-  // Enable submit button when an account is selected
-  const username = usernameSelect.value;
-  const notFoundMessage = document.getElementById('usernameNotFound');
-  if (!username) {
-    submitButton.disabled = true;
-    notFoundMessage.style.display = 'none';
-    return;
-  }
-  //        const address = netidAccounts.usernames[username].keys.address;
-  const address = netidAccounts.usernames[username].address;
-  const availability = await checkUsernameAvailability(username, address);
-  //console.log('usernames.length', usernames.length);
-  //console.log('availability', availability);
-  const removeButton = document.getElementById('removeAccountButton');
-  if (usernames.length === 1 && availability === 'mine') {
-    handleSignIn();
-    return;
-  } else if (availability === 'mine') {
-    submitButton.disabled = false;
-    submitButton.textContent = 'Sign In';
-    submitButton.style.display = 'inline';
-    removeButton.style.display = 'none';
-    notFoundMessage.style.display = 'none';
-  } else if (availability === 'taken') {
-    submitButton.style.display = 'none';
-    removeButton.style.display = 'inline';
-    notFoundMessage.textContent = 'taken';
-    notFoundMessage.style.display = 'inline';
-  } else if (availability === 'available') {
-    submitButton.disabled = false;
-    submitButton.textContent = 'Recreate';
-    submitButton.style.display = 'inline';
-    removeButton.style.display = 'inline';
-    notFoundMessage.textContent = 'not found';
-    notFoundMessage.style.display = 'inline';
-  } else {
-    submitButton.disabled = true;
-    submitButton.textContent = 'Sign In';
-    submitButton.style.display = 'none';
-    removeButton.style.display = 'none';
-    notFoundMessage.textContent = 'network error';
-    notFoundMessage.style.display = 'inline';
-  }
-}
-
-function closeSignInModal() {
-  document.getElementById('signInModal').classList.remove('active');
-}
-
-function openCreateAccountModal() {
-  document.getElementById('createAccountModal').classList.add('active');
-}
-
-// Check availability on input changes
-let createAccountCheckTimeout;
-function handleCreateAccountInput(e) {
-  const username = normalizeUsername(e.target.value);
-  const usernameAvailable = document.getElementById('newUsernameAvailable');
-  const submitButton = document.querySelector('#createAccountForm button[type="submit"]');
-
-  // Clear previous timeout
-  if (createAccountCheckTimeout) {
-    clearTimeout(createAccountCheckTimeout);
-  }
-
-  // Reset display
-  usernameAvailable.style.display = 'none';
-  // username available test: change to false to test pending register tx
-  submitButton.disabled = true;
-
-  // Check if username is too short
-  if (username.length < 3) {
-    usernameAvailable.textContent = 'too short';
-    usernameAvailable.style.color = '#dc3545';
-    usernameAvailable.style.display = 'inline';
-    return;
-  }
-
-  // Check network availability
-  createAccountCheckTimeout = setTimeout(async () => {
-    const taken = await checkUsernameAvailability(username);
-    if (taken == 'taken') {
-      usernameAvailable.textContent = 'taken';
-      usernameAvailable.style.color = '#dc3545';
-      usernameAvailable.style.display = 'inline';
-      // username available test: comment out to test pending register tx
-      submitButton.disabled = true;
-    } else if (taken == 'available') {
-      usernameAvailable.textContent = 'available';
-      usernameAvailable.style.color = '#28a745';
-      usernameAvailable.style.display = 'inline';
-      submitButton.disabled = false;
-    } else {
-      usernameAvailable.textContent = 'network error';
-      usernameAvailable.style.color = '#dc3545';
-      usernameAvailable.style.display = 'inline';
-      submitButton.disabled = true;
-    }
-  }, 1000);
-}
-
-function closeCreateAccountModal() {
-  document.getElementById('createAccountModal').classList.remove('active');
-}
-
-async function handleCreateAccount(event) {
-  // disable submit button
-  const submitButton = document.querySelector('#createAccountForm button[type="submit"]');
-  submitButton.disabled = true;
-  // disable input fields, back button, and toggle button
-  const toggleButton = document.getElementById('togglePrivateKeyInput');
-  const usernameInput = document.getElementById('newUsername');
-  const privateKeyInput = document.getElementById('newPrivateKey');
-  const backButton = document.getElementById('closeCreateAccountModal');
-
-  toggleButton.disabled = true;
-  usernameInput.disabled = true;
-  privateKeyInput.disabled = true;
-  backButton.disabled = true;
-
-  event.preventDefault();
-  const username = normalizeUsername(document.getElementById('newUsername').value);
-
-  // Get network ID from network.js
-  const { netid } = network;
-
-  // Get existing accounts or create new structure
-  const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
-
-  // Ensure netid and usernames objects exist
-  if (!existingAccounts.netids[netid]) {
-    existingAccounts.netids[netid] = { usernames: {} };
-  }
-
-  // Get private key from input or generate new one
-  const providedPrivateKey = document.getElementById('newPrivateKey').value;
-  const privateKeyError = document.getElementById('newPrivateKeyError');
-  let privateKey, privateKeyHex;
-
-  if (providedPrivateKey) {
-    // Validate and normalize private key
-    const validation = validatePrivateKey(providedPrivateKey);
-    if (!validation.valid) {
-      privateKeyError.textContent = validation.message;
-      privateKeyError.style.color = '#dc3545';
-      privateKeyError.style.display = 'inline';
-      // Re-enable controls on validation failure
-      submitButton.disabled = false;
-      toggleButton.disabled = false;
-      usernameInput.disabled = false;
-      privateKeyInput.disabled = false;
-      backButton.disabled = false;
-      return;
-    }
-
-    privateKey = hex2bin(validation.key);
-    privateKeyHex = validation.key;
-    privateKeyError.style.display = 'none';
-  } else {
-    privateKey = generateRandomPrivateKey();
-    privateKeyHex = bin2hex(privateKey);
-    privateKeyError.style.display = 'none'; // Ensure hidden if generated
-  }
-
-  function validatePrivateKey(key) {
-    // Trim whitespace
-    key = key.trim();
-
-    // Remove 0x prefix if present
-    if (key.startsWith('0x')) {
-      key = key.slice(2);
-    }
-
-    // Convert to lowercase
-    key = key.toLowerCase();
-
-    // Validate hex characters
-    const hexRegex = /^[0-9a-f]*$/;
-    if (!hexRegex.test(key)) {
-      return {
-        valid: false,
-        message: 'Invalid characters - only 0-9 and a-f allowed',
-      };
-    }
-
-    // Validate length (64 chars for 32 bytes)
-    if (key.length !== 64) {
-      return {
-        valid: false,
-        message: 'Invalid length - must be 64 hex characters',
-      };
-    }
-
-    return {
-      valid: true,
-      key: key,
-    };
-  }
-
-  // Generate uncompressed public key
-  const publicKey = getPublicKey(privateKey);
-  const publicKeyHex = bin2hex(publicKey);
-  const pqSeed = bin2hex(generateRandomBytes(64));
-
-  // Generate address from public key
-  const address = generateAddress(publicKey);
-  const addressHex = bin2hex(address);
-
-  // If a private key was provided, check if the derived address already exists on the network
-  if (providedPrivateKey) {
-    try {
-      const accountCheckAddress = longAddress(addressHex);
-      console.log(`Checking network for existing account at address: ${accountCheckAddress}`);
-      const accountInfo = await queryNetwork(`/account/${accountCheckAddress}`);
-
-      // Check if the query returned data indicating an account exists.
-      // This assumes a non-null `accountInfo` with an `account` property means it exists.
-      if (accountInfo && accountInfo.account) {
-        console.log('Account already exists for this private key:', accountInfo);
-        privateKeyError.textContent = 'An account already exists for this private key.';
-        privateKeyError.style.color = '#dc3545';
-        privateKeyError.style.display = 'inline';
-        // Re-enable controls when account already exists
-        submitButton.disabled = false;
-        toggleButton.disabled = false;
-        usernameInput.disabled = false;
-        privateKeyInput.disabled = false;
-        backButton.disabled = false;
-        return; // Stop the account creation process
-      } else {
-        console.log('No existing account found for this private key.');
-        privateKeyError.style.display = 'none';
-      }
-    } catch (error) {
-      console.error('Error checking for existing account:', error);
-      privateKeyError.textContent = 'Network error checking key. Please try again.';
-      privateKeyError.style.color = '#dc3545';
-      privateKeyError.style.display = 'inline';
-      // Re-enable controls on network error
-      submitButton.disabled = false;
-      toggleButton.disabled = false;
-      usernameInput.disabled = false;
-      privateKeyInput.disabled = false;
-      backButton.disabled = false;
-      return; // Stop process on error
-    }
-  }
-
-  // Create new account entry
-  myAccount = {
-    netid,
-    username,
-    chatTimestamp: 0,
-    keys: {
-      address: addressHex,
-      public: publicKeyHex,
-      secret: privateKeyHex,
-      type: 'secp256k1',
-      pqSeed: pqSeed, // store only the 64 byte seed instead of 32,000 byte public and secret keys
-    },
-  };
-  let waitingToastId = showToast('Creating account...', 0, 'loading');
-  let res;
-  // Create new data entry
-  try {
-    await getNetworkParams();
-    myData = newDataRecord(myAccount);
-    res = await postRegisterAlias(username, myAccount.keys);
-  } catch (error) {
-    submitButton.disabled = false;
-    toggleButton.disabled = false;
-    usernameInput.disabled = false;
-    privateKeyInput.disabled = false;
-    backButton.disabled = false;
-    if (waitingToastId) hideToast(waitingToastId);
-    showToast(`Failed to fetch network parameters, try again later.`, 0, 'error');
-    console.error('Failed to fetch network parameters, using defaults:', error);
-    return;
-  }
-
-  if (res && res.result && res.result.success && res.txid) {
-    const txid = res.txid;
-
-    try {
-      // Start intervals since trying to create account and tx should be in pending
-      if (!updateWebSocketIndicatorIntervalId) {
-        updateWebSocketIndicatorIntervalId = setInterval(updateWebSocketIndicator, 5000);
-      }
-      if (!checkPendingTransactionsIntervalId) {
-        checkPendingTransactionsIntervalId = setInterval(checkPendingTransactions, 5000);
-      }
-
-      // Wait for the transaction confirmation
-      const confirmationDetails = await pendingPromiseService.register(txid);
-      if (
-        confirmationDetails.username !== username ||
-        confirmationDetails.address !== longAddress(myAccount.keys.address)
-      ) {
-        throw new Error('Confirmation details mismatch.');
-      }
-
-      if (waitingToastId) hideToast(waitingToastId);
-      showToast('Account created successfully!', 3000, 'success');
-      submitButton.disabled = false;
-      toggleButton.disabled = false;
-      usernameInput.disabled = false;
-      privateKeyInput.disabled = false;
-      backButton.disabled = false;
-      closeCreateAccountModal();
-      document.getElementById('welcomeScreen').style.display = 'none';
-      getChats.lastCall = getCorrectedTimestamp();
-      // Store updated accounts back in localStorage
-      existingAccounts.netids[netid].usernames[username] = { address: myAccount.keys.address };
-      localStorage.setItem('accounts', stringify(existingAccounts));
-      saveState();
-
-      await switchView('chats');
-    } catch (error) {
-      if (waitingToastId) hideToast(waitingToastId);
-      console.log(`DEBUG: handleCreateAccount error`, JSON.stringify(error, null, 2));
-      showToast(`account creation failed: ${error}`, 0, 'error');
-      submitButton.disabled = false;
-      toggleButton.disabled = false;
-      usernameInput.disabled = false;
-      privateKeyInput.disabled = false;
-      backButton.disabled = false;
-
-      // Clear intervals
-      if (updateWebSocketIndicatorIntervalId) {
-        clearInterval(updateWebSocketIndicatorIntervalId);
-        updateWebSocketIndicatorIntervalId = null;
-      }
-      if (checkPendingTransactionsIntervalId) {
-        clearInterval(checkPendingTransactionsIntervalId);
-        checkPendingTransactionsIntervalId = null;
-      }
-
-      // Note: `checkPendingTransactions` will also remove the item from `myData.pending` if it's rejected by the service.
-      return;
-    }
-  } else {
-    if (waitingToastId) hideToast(waitingToastId);
-    console.error(`DEBUG: handleCreateAccount error in else`, JSON.stringify(res, null, 2));
-
-    // Clear intervals
-    if (updateWebSocketIndicatorIntervalId) {
-      clearInterval(updateWebSocketIndicatorIntervalId);
-      updateWebSocketIndicatorIntervalId = null;
-    }
-    if (checkPendingTransactionsIntervalId) {
-      clearInterval(checkPendingTransactionsIntervalId);
-      checkPendingTransactionsIntervalId = null;
-    }
-
-    // no toast here since injectTx will show it
-    submitButton.disabled = false;
-    toggleButton.disabled = false;
-    usernameInput.disabled = false;
-    privateKeyInput.disabled = false;
-    backButton.disabled = false;
-    return;
-  }
-}
-
-// This is for the sign in button after selecting an account
-async function handleSignIn(event) {
-  if (event) {
-    event.preventDefault();
-  }
-  const username = document.getElementById('username').value;
-  const submitButton = document.querySelector('#signInForm button[type="submit"]');
-
-  // Get network ID from network.js
-  const { netid } = network;
-
-  // Get existing accounts
-  const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
-
-  // Check if username exists
-  if (!existingAccounts.netids[netid]?.usernames?.[username]) {
-    console.error('Account not found');
-    return;
-  }
-
-  // Check if the button text is 'Recreate'
-  if (submitButton.textContent === 'Recreate') {
-    const myData = parse(localStorage.getItem(`${username}_${netid}`));
-    const privateKey = myData.account.keys.secret;
-    const newUsernameInput = document.getElementById('newUsername');
-    newUsernameInput.value = username;
-
-    document.getElementById('newPrivateKey').value = privateKey;
-    closeSignInModal();
-    openCreateAccountModal();
-    // Dispatch a change event to trigger the availability check
-    newUsernameInput.dispatchEvent(new Event('input'));
-    return;
-  }
-
-  myData = parse(localStorage.getItem(`${username}_${netid}`));
-  if (!myData) {
-    console.log('Account data not found');
-    return;
-  }
-  myAccount = myData.account;
-
-  /* requestNotificationPermission(); */
-
-  // Start intervals now that user is signed in
-  if (!updateWebSocketIndicatorIntervalId) {
-    updateWebSocketIndicatorIntervalId = setInterval(updateWebSocketIndicator, 5000);
-  }
-  if (!checkPendingTransactionsIntervalId) {
-    checkPendingTransactionsIntervalId = setInterval(checkPendingTransactions, 5000);
-  }
-
-  // Close modal and proceed to app
-  closeSignInModal();
-  document.getElementById('welcomeScreen').style.display = 'none';
-  await switchView('chats'); // Default view
-}
-
 function newDataRecord(myAccount) {
-  // Process network gateways first
-  const networkGateways =
-    typeof network !== 'undefined' && network?.gateways?.length
-      ? network.gateways.map((gateway) => ({
-          protocol: gateway.protocol,
-          host: gateway.host,
-          port: gateway.port,
-          name: `${gateway.host} (System)`,
-          isSystem: true,
-          isDefault: false,
-        }))
-      : [];
 
   const myData = {
     timestamp: getCorrectedTimestamp(),
     account: myAccount,
     network: {
-      gateways: networkGateways,
+      gateways: [],
       defaultGatewayIndex: -1, // -1 means use random selection
     },
     contacts: {},
@@ -805,117 +316,125 @@ function newDataRecord(myAccount) {
       encrypt: true,
       toll: parameters?.current?.defaultToll || 1n * wei,
       tollUnit: parameters?.current?.defaultTollUnit || 'LIB',
+      noticets: 0,
     },
   };
 
   return myData;
 }
 
-// Check if app is running as installed PWA
-function checkIsInstalledPWA() {
-  return (
-    window.matchMedia('(display-mode: standalone)').matches ||
-    window.navigator.standalone ||
-    document.referrer.includes('android-app://')
-  );
+/**
+ * Handle native app subscription tokens and handle subscription
+ * This is used to subscribe to push notifications for the native app
+ * @returns {Promise<void>}
+ */
+async function handleNativeAppSubscription() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const deviceToken = urlParams.get('device_token');
+  const pushToken = urlParams.get('push_token');
+  
+  if (deviceToken && pushToken) {
+    console.log('Native app subscription tokens detected:', { deviceToken, pushToken });
+    
+    try {
+      // Get the user's address from localStorage if available
+      const { netid } = network;
+      const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
+      const netidAccounts = existingAccounts.netids[netid];
+      
+      let addresses = [];
+      if (netidAccounts?.usernames) {
+        // Get addresses from all stored accounts and convert to long format
+        addresses = Object.values(netidAccounts.usernames).map(account => longAddress(account.address));
+      }
+      
+      const payload = {
+        deviceToken,
+        expoPushToken: pushToken,
+        addresses: addresses
+      };
+      
+      // Get the appropriate gateway for this request
+      const selectedGateway = getGatewayForRequest();
+      if (!selectedGateway) {
+        console.error('No gateway available for subscription request');
+        showToast('No gateway available', 3000, 'error');
+        return;
+      }
+      
+      const SUBSCRIPTION_API = `${selectedGateway.web}/notifier/subscribe`;
+
+      console.log('payload', payload);
+      console.log('SUBSCRIPTION_API', SUBSCRIPTION_API);
+      
+      const response = await fetch(SUBSCRIPTION_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Subscription successful:', result);
+        /* showToast('Push notifications enabled', 3000, 'success'); */
+      } else {
+        console.error('Subscription failed:', response.status, response.statusText);
+        /* showToast('Failed to enable push notifications', 3000, 'error'); */
+      }
+    } catch (error) {
+      console.error('Error subscribing to push notifications:', error);
+      /* showToast('Error enabling push notifications', 3000, 'error'); */
+    }
+  }
 }
 
 // Load saved account data and update chat list on page load
 document.addEventListener('DOMContentLoaded', async () => {
   await checkVersion(); // version needs to be checked before anything else happens
-  await lockToPortrait();
   timeDifference(); // Calculate and log time difference early
 
-  // Initialize service worker only if running as installed PWA
-  isInstalledPWA = checkIsInstalledPWA(); // Set the global variable
-  if (isInstalledPWA && 'serviceWorker' in navigator) {
-    await registerServiceWorker();
-    setupServiceWorkerMessaging();
-    setupAppStateManagement();
-  } else {
-    // Web-only mode
-    console.log('Running in web-only mode, skipping service worker initialization');
-  }
-
   setupConnectivityDetection();
-
-  document.getElementById('versionDisplay').textContent = myVersion + ' ' + version;
-  document.getElementById('networkNameDisplay').textContent = network.name;
 
   // Add unload handler to save myData
   window.addEventListener('unload', handleUnload);
   window.addEventListener('beforeunload', handleBeforeUnload);
   document.addEventListener('visibilitychange', handleVisibilityChange); // Keep as document
 
-  // Check for existing accounts and arrange welcome buttons
-  const usernames = getAvailableUsernames();
-  const hasAccounts = usernames.length > 0;
+  // Check for native app subscription tokens and handle subscription
+  handleNativeAppSubscription();
 
-  const signInBtn = document.getElementById('signInButton');
-  const createAccountBtn = document.getElementById('createAccountButton');
-  const importAccountBtn = document.getElementById('importAccountButton');
-  const welcomeButtons = document.querySelector('.welcome-buttons');
+  // Sign In Modal
+  signInModal.load();
 
-  // Reorder buttons based on accounts existence
-  if (hasAccounts) {
-    welcomeButtons.innerHTML = ''; // Clear existing order
-    signInBtn.classList.remove('hidden');
-    createAccountBtn.classList.remove('hidden');
-    importAccountBtn.classList.remove('hidden');
-    welcomeButtons.appendChild(signInBtn);
-    welcomeButtons.appendChild(createAccountBtn);
-    welcomeButtons.appendChild(importAccountBtn);
-    signInBtn.classList.add('primary-button');
-    signInBtn.classList.remove('secondary-button');
-  } else {
-    welcomeButtons.innerHTML = ''; // Clear existing order
-    createAccountBtn.classList.remove('hidden');
-    importAccountBtn.classList.remove('hidden');
-    welcomeButtons.appendChild(createAccountBtn);
-    welcomeButtons.appendChild(importAccountBtn);
-    createAccountBtn.classList.add('primary-button');
-    createAccountBtn.classList.remove('secondary-button');
-  }
+  // Welcome Screen
+  welcomeScreen.load()
 
-  // Add event listeners
-  document.getElementById('toggleMenu').addEventListener('click', toggleMenu);
-  document.getElementById('closeMenu').addEventListener('click', toggleMenu);
+  // Footer
+  footer.load();
+
+  // Header
+  header.load();
+
+  // Chats Screen
+  chatsScreen.load();
+
+  // Contacts Screen
+  contactsScreen.load();
+
+  // Wallet Screen
+  walletScreen.load();
 
   // About and Contact Modals
   aboutModal.load();
   contactModal.load();
 
-  // Sign In Modal
-  signInBtn.addEventListener('click', openSignInModal);
-  document.getElementById('closeSignInModal').addEventListener('click', closeSignInModal);
-  document.getElementById('signInForm').addEventListener('submit', handleSignIn);
-
   // Create Account Modal
-  createAccountBtn.addEventListener('click', () => {
-    document.getElementById('newUsername').value = '';
-    document.getElementById('newPrivateKey').value = '';
-    document.getElementById('newUsernameAvailable').style.display = 'none';
-    document.getElementById('newPrivateKeyError').style.display = 'none';
-    openCreateAccountModal();
-  });
-  document
-    .getElementById('closeCreateAccountModal')
-    .addEventListener('click', closeCreateAccountModal);
-  document.getElementById('createAccountForm').addEventListener('submit', handleCreateAccount);
-
-  // Event listener for the private key toggle checkbox
-  const togglePrivateKeyInput = document.getElementById('togglePrivateKeyInput');
-  togglePrivateKeyInput.addEventListener('change', handleTogglePrivateKeyInput);
+  createAccountModal.load();
 
   // Account Form Modal
   myProfileModal.load();
-
-  document.getElementById('openExplorer').addEventListener('click', () => {
-    window.open('./explorer', '_blank');
-  });
-  document.getElementById('openMonitor').addEventListener('click', () => {
-    window.open('./network', '_blank');
-  });
 
   restoreAccountModal.load();
 
@@ -934,14 +453,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Remove Account Modal
   removeAccountModal.load();
 
-  // Gateway Menu
-  gatewayModal.load();
-
   // Invite Modal
   inviteModal.load();
 
   // Chat Modal
   chatModal.load();
+
+  // Contact Info Modal
+  contactInfoModal.load();
 
   // Failed Message Modal
   failedMessageModal.load();
@@ -952,37 +471,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Send Asset Modal
   sendAssetFormModal.load();
 
-  // Add event listeners for send asset confirmation modal
-  document
-    .getElementById('closeSendAssetConfirmModal')
-    .addEventListener('click', closeSendAssetConfirmModal);
-  document.getElementById('confirmSendButton').addEventListener('click', handleSendAsset);
-  document.getElementById('cancelSendButton').addEventListener('click', closeSendAssetConfirmModal);
+  // Send Asset Confirm Modal
+  sendAssetConfirmModal.load();
 
-  document.getElementById('openReceiveModal').addEventListener('click', openReceiveModal);
-  document.getElementById('closeReceiveModal').addEventListener('click', closeReceiveModal);
-  document.getElementById('copyAddress').addEventListener('click', copyAddress);
+  // Receive Modal
+  receiveModal.load();
 
-  document.getElementById('openHistoryModal').addEventListener('click', openHistoryModal);
-  document.getElementById('closeHistoryModal').addEventListener('click', closeHistoryModal);
-  document.getElementById('historyAsset').addEventListener('change', updateHistoryAddresses);
-  document.getElementById('transactionList').addEventListener('click', handleHistoryItemClick);
+  // Edit Contact Modal
+  editContactModal.load();
 
-  // Receive Modal input listeners
-  document.getElementById('receiveAsset').addEventListener('change', updateQRCode);
-  document.getElementById('receiveAmount').addEventListener('input', debounce(updateQRCode, 300));
-  document.getElementById('receiveMemo').addEventListener('input', debounce(updateQRCode, 300));
+  // Scan QR Modal
+  scanQRModal.load();
 
-  document.getElementById('switchToChats').addEventListener('click', () => switchView('chats'));
-  document
-    .getElementById('switchToContacts')
-    .addEventListener('click', () => switchView('contacts'));
-  document.getElementById('switchToWallet').addEventListener('click', () => switchView('wallet'));
+  // Search Messages Modal
+  searchMessagesModal.load();
 
-  document.getElementById('handleSignOut').addEventListener('click', handleSignOut);
-  document
-    .getElementById('closeContactInfoModal')
-    .addEventListener('click', () => contactInfoModal.close());
+  // Contact Search Modal
+  searchContactsModal.load();
+
+  // History Modal
+  historyModal.load();
+
+  // Menu Modal
+  menuModal.load();
+
+  // Failed Transaction Modal
+  failedTransactionModal.load();
+  
+  // Friend Modal
+  friendModal.load();
 
   // add event listener for back-button presses to prevent shift+tab
   document.querySelectorAll('.back-button').forEach((button) => {
@@ -992,190 +509,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('.last-item').forEach((item) => {
     item.addEventListener('keydown', ignoreTabKey);
   });
-  // add event listener for first-item to prevent shift+tab
-  document.querySelectorAll('.logo-link').forEach((item) => {
-    item.addEventListener('keydown', ignoreShiftTabKey);
-  });
-
-  // Add refresh balance button handler
-  document.getElementById('refreshBalance').addEventListener('click', async () => {
-    // await updateWalletBalances();
-    updateWalletView();
-  });
-
-  // Add new search functionality
-  const messageSearch = document.getElementById('messageSearch');
-  const searchModal = document.getElementById('searchModal');
-
-  // Close search modal
-  document.getElementById('closeSearchModal').addEventListener('click', () => {
-    searchModal.classList.remove('active');
-    messageSearch.value = '';
-    document.getElementById('searchResults').innerHTML = '';
-  });
-
-  // Handle search input with debounce
-  messageSearch.addEventListener(
-    'input',
-    debounce((e) => {
-      const searchText = e.target.value.trim();
-      if (searchText.length < 2) {
-        displayEmptyState('searchResults', 'No messages found');
-        return;
-      }
-
-      const results = searchMessages(searchText);
-      if (results.length === 0) {
-        displayEmptyState('searchResults', 'No messages found');
-      } else {
-        displaySearchResults(results);
-      }
-    }, 300)
-  );
-
-  // Handle message search input
-  document.getElementById('messageSearch').addEventListener('input', (e) => {
-    handleMessageSearchInput(e);
-  });
-
-  // Handle search input click
-  document.getElementById('searchInput').addEventListener('click', (e) => {
-    handleSearchInputClick(e);
-  });
-
-  // Add contact search functionality
-  const contactSearchInput = document.getElementById('contactSearchInput');
-  const contactSearch = document.getElementById('contactSearch');
-  const contactSearchModal = document.getElementById('contactSearchModal');
-
-  // Open contact search modal when clicking the search bar
-  contactSearchInput.addEventListener('click', () => {
-    contactSearchModal.classList.add('active');
-    contactSearch.focus();
-  });
-
-  // Close contact search modal
-  document.getElementById('closeContactSearchModal').addEventListener('click', () => {
-    contactSearchModal.classList.remove('active');
-    contactSearch.value = '';
-    document.getElementById('contactSearchResults').innerHTML = '';
-  });
-
-  // Handle contact search input with debounce
-  contactSearch.addEventListener(
-    'input',
-    debounce(
-      (e) => {
-        const searchText = e.target.value.trim();
-
-        // Just clear results if empty
-        if (!searchText) {
-          document.getElementById('contactSearchResults').innerHTML = '';
-          return;
-        }
-
-        const results = searchContacts(searchText);
-        if (results.length === 0) {
-          displayEmptyState('contactSearchResults', 'No contacts found');
-        } else {
-          displayContactResults(results, searchText);
-        }
-      },
-      (searchText) => (searchText.length === 1 ? 600 : 300)
-    )
-  ); // Dynamic wait time
-
-  // Omar added
-  document.getElementById('scanQRButton').addEventListener('click', openQRScanModal);
-  document.getElementById('scanStakeQRButton').addEventListener('click', openQRScanModal);
-  document.getElementById('closeQRScanModal').addEventListener('click', closeQRScanModal);
-
-  // File upload handlers
-  document.getElementById('uploadQRButton').addEventListener('click', () => {
-    document.getElementById('qrFileInput').click();
-  });
-
-  document.getElementById('uploadStakeQRButton').addEventListener('click', () => {
-    document.getElementById('stakeQrFileInput').click();
-  });
-
-  document
-    .getElementById('qrFileInput')
-    .addEventListener('change', (event) => handleQRFileSelect(event, fillPaymentFromQR));
-  document
-    .getElementById('stakeQrFileInput')
-    .addEventListener('change', (event) => handleQRFileSelect(event, fillStakeAddressFromQR));
-
-  const nameInput = document.getElementById('editContactNameInput');
-  const nameActionButton = nameInput.parentElement.querySelector('.field-action-button');
-
-  nameInput.addEventListener('input', handleEditNameInput);
-  nameInput.addEventListener('keydown', handleEditNameKeydown);
-  nameActionButton.addEventListener('click', handleEditNameButton);
-
-  // Add send money button handler
-  document.getElementById('contactInfoSendButton').addEventListener('click', () => {
-    const contactUsername = document.getElementById('contactInfoUsername');
-    if (contactUsername) {
-      sendAssetFormModal.username = contactUsername.textContent;
-    }
-    sendAssetFormModal.open();
-  });
-
-  document.getElementById('chatSendMoneyButton').addEventListener('click', (event) => {
-    const button = event.currentTarget;
-    sendAssetFormModal.username = button.dataset.username;
-    sendAssetFormModal.open();
-  });
-
-  // Add listener for the password visibility toggle
-  const togglePasswordButton = document.getElementById('togglePrivateKeyVisibility');
-  const passwordInput = document.getElementById('newPrivateKey');
-
-  togglePasswordButton.addEventListener('click', function () {
-    // Toggle the type attribute
-    const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
-    passwordInput.setAttribute('type', type);
-
-    // Toggle the visual state class on the button
-    this.classList.toggle('toggled-visible');
-  });
-
-  // add listener for username select change on sign in modal
-  document.getElementById('username').addEventListener('change', handleUsernameOnSignInModal);
-
-  // Add event listener for remove account button
-  document
-    .getElementById('removeAccountButton')
-    .addEventListener('click', handleRemoveAccountButton);
-
-  // create account button listener to clear message input on create account
-  document.getElementById('newUsername').addEventListener('input', handleCreateAccountInput);
-  document.getElementById('newUsername').addEventListener('paste', handlePaste);
-  document.getElementById('newUsername').addEventListener('input', filterUsernameInput);
-
-  // Event Listerns for FailedPaymentModal
-  const failedPaymentModal = document.getElementById('failedPaymentModal');
-  const failedPaymentRetryButton = failedPaymentModal.querySelector('.retry-button');
-  const failedPaymentDeleteButton = failedPaymentModal.querySelector('.delete-button');
-  const failedPaymentHeaderCloseButton = document.getElementById('closeFailedPaymentModal');
-
-  failedPaymentRetryButton.addEventListener('click', handleFailedPaymentRetry);
-  failedPaymentDeleteButton.addEventListener('click', handleFailedPaymentDelete);
-  failedPaymentHeaderCloseButton.addEventListener('click', closeFailedPaymentModalAndClearState);
-  failedPaymentModal.addEventListener('click', handleFailedPaymentBackdropClick);
 
   getNetworkParams();
 
-  const welcomeScreenLastItem = document.getElementById('welcomeScreenLastItem');
-  welcomeScreenLastItem.focus();
+  welcomeScreen.lastItem.focus();
 
-  setupAddToHomeScreen();
+  // Deprecated - do not want to encourage or confuse users with this feature since on IOS uses seperate local storage
+  //setupAddToHomeScreen();
 });
 
 function handleUnload() {
   console.log('in handleUnload');
-  if (handleSignOut.exit) {
+  if (menuModal.isSignoutExit) {
     return;
   } // User selected to Signout; state was already saved
   else {
@@ -1199,7 +544,7 @@ function handleBeforeUnload(e) {
   }
 
   saveState();
-  if (handleSignOut.exit) {
+  if (menuModal.isSignoutExit) {
     window.removeEventListener('beforeunload', handleBeforeUnload);
     return;
   } // user selected to Signout; state was already saved
@@ -1217,7 +562,12 @@ async function handleVisibilityChange() {
 
   if (document.visibilityState === 'hidden') {
     saveState();
-    if (handleSignOut.exit) {
+    // if chatModal was opened, save the last message count
+    if (chatModal.isActive() && chatModal.address) {
+      const contact = myData.contacts[chatModal.address];
+      chatModal.lastMessageCount = contact?.messages?.length || 0;
+    }
+    if (menuModal.isSignoutExit) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       return;
     }
@@ -1226,10 +576,14 @@ async function handleVisibilityChange() {
     if (wsManager && !wsManager.isConnected() && myAccount) {
       wsManager.connect();
     }
-    setTimeout(async () => {
-      await updateChatData();
-      await updateChatList();
-    }, 1000);
+    // if chatModal was opened, check if message count changed while hidden
+    if (chatModal.isActive() && chatModal.address) {
+      const contact = myData.contacts[chatModal.address];
+      const currentCount = contact?.messages?.length || 0;
+      if (currentCount !== chatModal.lastMessageCount) {
+        chatModal.appendChatModal(true);
+      }
+    }
   }
 }
 
@@ -1241,293 +595,380 @@ function saveState() {
   }
 }
 
-function setupAddToHomeScreen() {
-  // Add to home screen functionality
-  let deferredInstallPrompt;
-  let addToHomeScreenButton = document.getElementById('addToHomeScreenButton');
+class WelcomeScreen {
+  constructor() {}
 
-  // Device and browser detection with improved iOS browser checks
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-  const isChromeIOS = /CriOS/.test(navigator.userAgent);
-  const isFirefoxIOS = /FxiOS/.test(navigator.userAgent);
-  const isEdgeIOS = /EdgiOS/.test(navigator.userAgent);
-  const isSafari = /^((?!chrome|android|CriOS|FxiOS|EdgiOS).)*safari/i.test(navigator.userAgent);
-  const isAndroid = /android/i.test(navigator.userAgent);
-  const isDesktop = !isIOS && !isAndroid;
-  const isStandalone =
-    window.matchMedia('(display-mode: standalone)').matches ||
-    window.navigator.standalone || // iOS
-    document.referrer.includes('android-app://');
+  load() {
+    this.screen = document.getElementById('welcomeScreen');
+    this.signInButton = document.getElementById('signInButton');
+    this.createAccountButton = document.getElementById('createAccountButton');
+    this.importAccountButton = document.getElementById('importAccountButton');
+    this.welcomeButtons = document.querySelector('.welcome-buttons');
+    this.logoLink = this.screen.querySelector('.logo-link');
+    this.logoLink.addEventListener('keydown', ignoreShiftTabKey);  // add event listener for first-item to prevent shift+tab
+    this.versionDisplay = document.getElementById('versionDisplay');
+    this.networkNameDisplay = document.getElementById('networkNameDisplay');
+    this.lastItem = document.getElementById('welcomeScreenLastItem');
+    
+    
+    this.versionDisplay.textContent = myVersion + ' ' + version;
+    this.networkNameDisplay.textContent = network.name;
+    
+    this.signInButton.addEventListener('click', () => signInModal.open());
+    this.createAccountButton.addEventListener('click', () => createAccountModal.openWithReset());
+    this.importAccountButton.addEventListener('click', () => restoreAccountModal.open());
 
-  // Add browser detection
-  const isOpera =
-    navigator.userAgent.indexOf('OPR') > -1 || navigator.userAgent.indexOf('Opera') > -1;
-  const isFirefox = navigator.userAgent.indexOf('Firefox') > -1;
-
-  // Function to check if the app can be installed
-  const canInstall = () => {
-    // Already installed as PWA
-    if (isStandalone) {
-      console.log('App is already installed');
-      return false;
-    }
-
-    // iOS - show button for all browsers (will handle redirect to Safari)
-    if (isIOS) {
-      const browser = isChromeIOS
-        ? 'Chrome'
-        : isFirefoxIOS
-          ? 'Firefox'
-          : isEdgeIOS
-            ? 'Edge'
-            : isSafari
-              ? 'Safari'
-              : 'other';
-      console.log(`iOS ${browser} detected - showing button`);
-      return true;
-    }
-
-    // For both Desktop and Android, rely on actual install prompt support
-    return 'serviceWorker' in navigator && 'BeforeInstallPromptEvent' in window;
-  };
-
-  // Function to update button visibility
-  const updateButtonVisibility = () => {
-    if (addToHomeScreenButton) {
-      if (canInstall()) {
-        console.log('Can install - showing button');
-        addToHomeScreenButton.style.display = 'block';
-      } else {
-        console.log('Cannot install - hiding button');
-        addToHomeScreenButton.style.display = 'none';
-      }
-    }
-  };
-
-  // Create button if it doesn't exist
-  if (!addToHomeScreenButton) {
-    console.log('Creating Add to Home Screen button');
-    const welcomeButtons = document.querySelector('.welcome-buttons');
-    if (welcomeButtons) {
-      addToHomeScreenButton = document.createElement('button');
-      addToHomeScreenButton.id = 'addToHomeScreenButton';
-      addToHomeScreenButton.className = 'secondary-button';
-      addToHomeScreenButton.textContent = 'Install';
-      welcomeButtons.appendChild(addToHomeScreenButton);
-    }
+    this.orderButtons();
+    
   }
 
-  // Set up installation handling
-  if (addToHomeScreenButton) {
-    console.log('Setting up installation handling');
-    console.log('Device/Browser Detection:', {
-      isIOS,
-      isChromeIOS,
-      isFirefoxIOS,
-      isEdgeIOS,
-      isSafari,
-      isDesktop,
-      isStandalone,
-    });
+  open() {
+    this.screen.style.display = 'flex';
+  }
 
-    if (isIOS) {
-      if (!isSafari) {
-        // Non-Safari iOS browsers
-        addToHomeScreenButton.addEventListener('click', () => {
-          const currentUrl = window.location.href;
-          alert(
-            'Open in Safari...\n\n' +
-              'iOS only supports adding to home screen through Safari browser.'
-          );
-          // Open the current URL in Safari
-          window.location.href = currentUrl;
-        });
-      } else {
-        // iOS Safari - Show numbered install instructions
-        addToHomeScreenButton.addEventListener('click', () => {
-          alert(
-            'To add to home screen:\n\n' +
-              '1. Tap the share button (rectangle with arrow) at the bottom of Safari\n' +
-              '2. Scroll down and tap "Add to Home Screen"\n' +
-              '3. Tap "Add" in the top right'
-          );
-        });
-      }
-    } else if (isDesktop) {
-      // Desktop browsers - Handle install prompt
-      window.addEventListener('beforeinstallprompt', (e) => {
-        console.log('beforeinstallprompt fired on desktop');
-        e.preventDefault();
-        deferredInstallPrompt = e;
+  close() {
+    this.screen.style.display = 'none';
+  }
 
-        // Make sure the button is visible when we can install
-        updateButtonVisibility();
-      });
+  isActive() {
+    return this.screen.style.display === 'flex';
+  }
 
-      addToHomeScreenButton.addEventListener('click', async () => {
-        if (deferredInstallPrompt) {
-          console.log('prompting desktop install');
-          deferredInstallPrompt.prompt();
-          const { outcome } = await deferredInstallPrompt.userChoice;
-          console.log(`User response to the desktop install prompt: ${outcome}`);
-          deferredInstallPrompt = null;
-
-          if (outcome === 'accepted') {
-            addToHomeScreenButton.style.display = 'none';
-          }
-        } else if (isOpera) {
-          alert(
-            'Installation is not supported in Opera browser. Please use Google Chrome or Microsoft Edge.'
-          );
-        } else if (isFirefox) {
-          alert(
-            'Installation is not supported in Firefox browser. Please use Google Chrome or Microsoft Edge.'
-          );
-        } else {
-          alert('This app is already installed or cannot be installed on this device/browser.');
-        }
-      });
+  orderButtons() {
+    // Check for existing accounts and arrange welcome buttons
+    const usernames = getAvailableUsernames();
+    const hasAccounts = usernames.length > 0;
+    // Reorder buttons based on accounts existence
+    if (hasAccounts) {
+      this.welcomeButtons.innerHTML = ''; // Clear existing order
+      this.signInButton.classList.remove('hidden');
+      this.createAccountButton.classList.remove('hidden');
+      this.importAccountButton.classList.remove('hidden');
+      this.welcomeButtons.appendChild(this.signInButton);
+      this.welcomeButtons.appendChild(this.createAccountButton);
+      this.welcomeButtons.appendChild(this.importAccountButton);
+      this.signInButton.classList.add('primary-button');
+      this.signInButton.classList.remove('secondary-button');
     } else {
-      // Android - Handle install prompt
-      window.addEventListener('beforeinstallprompt', (e) => {
-        console.log('beforeinstallprompt fired on Android');
-        e.preventDefault();
-        deferredInstallPrompt = e;
-
-        updateButtonVisibility();
-      });
-
-      addToHomeScreenButton.addEventListener('click', async () => {
-        if (deferredInstallPrompt) {
-          console.log('prompting Android install');
-          deferredInstallPrompt.prompt();
-          const { outcome } = await deferredInstallPrompt.userChoice;
-          console.log(`User response to the Android install prompt: ${outcome}`);
-          deferredInstallPrompt = null;
-
-          if (outcome === 'accepted') {
-            addToHomeScreenButton.style.display = 'none';
-          }
-        }
-      });
+      this.welcomeButtons.innerHTML = ''; // Clear existing order
+      this.createAccountButton.classList.remove('hidden');
+      this.importAccountButton.classList.remove('hidden');
+      this.welcomeButtons.appendChild(this.createAccountButton);
+      this.welcomeButtons.appendChild(this.importAccountButton);
+      this.createAccountButton.classList.add('primary-button');
+      this.createAccountButton.classList.remove('secondary-button');
     }
-
-    // Hide button after successful installation
-    window.addEventListener('appinstalled', (event) => {
-      console.log('👍', 'appinstalled', event);
-      addToHomeScreenButton.style.display = 'none';
-    });
-
-    // Check if we can display the install button
-    updateButtonVisibility();
-
-    // Listen for display mode changes
-    window.matchMedia('(display-mode: standalone)').addEventListener('change', () => {
-      updateButtonVisibility();
-    });
   }
 }
 
-async function updateChatData() {
-  let gotChats = 0;
-  if (myAccount && myAccount.keys) {
-    try {
-      let retryCount = 0;
-      const maxRetries = 2;
+const welcomeScreen = new WelcomeScreen
 
-      while (retryCount <= maxRetries) {
-        try {
-          gotChats = await getChats(myAccount.keys);
-          break; // Success, exit the retry loop
-        } catch (networkError) {
-          retryCount++;
-          if (retryCount > maxRetries) {
-            throw networkError; // Rethrow if max retries reached
+class Header {
+  constructor() {}
+
+  load() {
+    this.header = document.getElementById('header');
+    this.text = this.header.querySelector('.app-name');
+    this.logoLink = this.header.querySelector('.logo-link');
+    this.menuButton = document.getElementById('toggleMenu');
+
+    this.logoLink.addEventListener('keydown', ignoreShiftTabKey); // add event listener for first-item to prevent shift+tab
+    this.menuButton.addEventListener('click', () => menuModal.open());
+  }
+
+  open() {
+    this.header.classList.add('active');
+  }
+
+  close() {
+    this.header.classList.remove('active');
+  }
+
+  isActive() {
+    return this.header.classList.contains('active');
+  }
+
+  setText(newText) {
+    this.text.textContent = newText;
+  }
+
+}
+
+const header = new Header();
+
+class Footer {
+  constructor() {
+    // No DOM dependencies in constructor
+  }
+
+  load() {
+    // DOM elements - only accessed when DOM is ready
+    this.footer = document.getElementById('footer');
+    this.chatButton = document.getElementById('switchToChats');
+    this.contactsButton = document.getElementById('switchToContacts');
+    this.walletButton = document.getElementById('switchToWallet');
+    this.newChatButton = document.getElementById('newChatButton');
+    this.lastItem = this.footer.querySelector('.last-item');
+
+    this.newChatButton.addEventListener('click', () => newChatModal.openNewChatModal());
+    this.chatButton.addEventListener('click', () => this.switchView('chats'));
+    this.contactsButton.addEventListener('click', () => this.switchView('contacts'));
+    this.walletButton.addEventListener('click', () => this.switchView('wallet'));
+  }
+
+  open() {
+    this.footer.classList.add('active');
+  }
+
+  close() {
+    this.footer.classList.remove('active');
+  }
+
+  async switchView(view) {
+    // Store the current view for potential rollback
+    const previousView = document.querySelector('.app-screen.active')?.id?.replace('Screen', '') || 'chats';
+    const previousButton = document.querySelector('.nav-button.active');
+  
+    // Initialize WebSocket connection regardless of view
+    if (wsManager) {
+      wsManager.initializeWebSocketManager();
+    }
+  
+    try {
+      // Hide all screens
+      chatsScreen.close();
+      contactsScreen.close();
+      walletScreen.close();
+  
+      // Show selected screen
+      document.getElementById(`${view}Screen`).classList.add('active');
+  
+      // Update nav buttons - remove active class from all
+      this.chatButton.classList.remove('active');
+      this.contactsButton.classList.remove('active');
+      this.walletButton.classList.remove('active');
+  
+      // Add active class to selected button
+      if (view === 'chats') {
+        this.chatButton.classList.add('active');
+      } else if (view === 'contacts') {
+        this.contactsButton.classList.add('active');
+      } else if (view === 'wallet') {
+        this.walletButton.classList.add('active');
+      }
+  
+      // Show header and footer
+      header.open();
+      footer.open();
+  
+      // Update header with username if signed in
+      const appName = document.querySelector('.app-name');
+      if (myAccount && myAccount.username) {
+        appName.textContent = `${myAccount.username}`;
+      } else {
+        appName.textContent = '';
+      }
+  
+      // Show/hide new chat button
+      if (view === 'chats' || view === 'contacts') {
+        this.newChatButton.classList.add('visible');
+      } else {
+        this.newChatButton.classList.remove('visible');
+      }
+  
+      // Update lists when switching views
+      if (view === 'chats') {
+        this.chatButton.classList.remove('has-notification');
+        // TODO: maybe need to invoke updateChatData here?
+        await chatsScreen.updateChatList();
+        if (isOnline) {
+          if (wsManager && !wsManager.isSubscribed()) {
+            pollChatInterval(pollIntervalNormal);
           }
-          console.log(`Retry ${retryCount}/${maxRetries} for chat update...${Date.now()}`);
-          await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount)); // Increasing backoff
         }
+  
+        // focus onto last-item in the footer
+        if (footer.lastItem) {
+          footer.lastItem.focus();
+        }
+      } else if (view === 'contacts') {
+        await contactsScreen.updateContactsList();
+      } else if (view === 'wallet') {
+        this.walletButton.classList.remove('has-notification');
+        await walletScreen.updateWalletView();
       }
     } catch (error) {
-      console.error('Error updating chat list:', error);
+      console.error(`Error switching to ${view} view:`, error);
+  
+      // Restore previous view if there was an error
+      if (previousView && previousButton) {
+        console.log(`Restoring previous view: ${previousView}`);
+  
+        // Hide all screens with direct references
+        chatsScreen.close();
+        contactsScreen.close();
+        walletScreen.close();
+  
+        // Show previous screen
+        const previousScreenElement = document.getElementById(`${previousView}Screen`);
+        if (previousScreenElement) {
+          previousScreenElement.classList.add('active');
+        }
+  
+        // Remove active class from all buttons with direct references
+        this.chatButton.classList.remove('active');
+        this.contactsButton.classList.remove('active');
+        this.walletButton.classList.remove('active');
+  
+        // Add active to the correct button based on previousView
+        if (previousView === 'chats') {
+          this.chatButton.classList.add('active');
+        } else if (previousView === 'contacts') {
+          this.contactsButton.classList.add('active');
+        } else if (previousView === 'wallet') {
+          this.walletButton.classList.add('active');
+        } else {
+          // Fallback if previousButton is available
+          previousButton.classList.add('active');
+        }
+  
+        // Display error toast to user
+        showToast(`Failed to switch to ${view} view`, 3000, 'error');
+      }
     }
   }
-  return gotChats;
 }
 
-// Update chat list UI
-async function updateChatList() {
-  const chatList = document.getElementById('chatList');
-  //const chatsData = myData
-  const contacts = myData.contacts;
-  const chats = myData.chats;
-  if (chats.length === 0) {
-    chatList.innerHTML = `
+const footer = new Footer();
+
+class ChatsScreen {
+  constructor() {
+
+  }
+
+  load() {
+    this.screen = document.getElementById('chatsScreen');
+    this.chatList = document.getElementById('chatList');
+    this.searchBarContainer = document.getElementById('searchBarContainer');
+    this.searchInput = document.getElementById('searchInput');
+
+    // Handle search input click that's on the chatsScreen
+    this.searchInput.addEventListener('click', () => {
+      searchMessagesModal.open();
+    });
+  }
+
+  open() {
+    this.screen.classList.add('active');
+  }
+
+  close() {
+    this.screen.classList.remove('active');
+  }
+
+  isActive() {
+    return this.screen.classList.contains('active');
+  }
+
+  /**
+ * Update the chat list by fetching the latest chats from the server
+ * @returns {Promise<number>} The number of chats fetched
+ */
+  async updateChatData() {
+    let gotChats = 0;
+    if (myAccount && myAccount.keys) {
+      try {
+        let retryCount = 0;
+        const maxRetries = 2;
+
+        while (retryCount <= maxRetries) {
+          try {
+            gotChats = await getChats(myAccount.keys);
+            break; // Success, exit the retry loop
+          } catch (networkError) {
+            retryCount++;
+            if (retryCount > maxRetries) {
+              throw networkError; // Rethrow if max retries reached
+            }
+            console.log(`Retry ${retryCount}/${maxRetries} for chat update...${Date.now()}`);
+            await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount)); // Increasing backoff
+          }
+        }
+      } catch (error) {
+        console.error('Error updating chat list:', error);
+      }
+    }
+    return gotChats;
+  }
+
+  // Update chat list UI
+  async updateChatList() {
+    const chatList = this.chatList;
+    //const chatsData = myData
+    const contacts = myData.contacts;
+    const chats = myData.chats;
+    if (chats.length === 0) {
+      chatList.innerHTML = `
             <div class="empty-state">
                 <div style="font-size: 2rem; margin-bottom: 1rem"></div>
                 <div style="font-weight: bold; margin-bottom: 0.5rem">Click the + button to start a chat</div>
                 <div>Your conversations will appear here</div>
             </div>`;
-    return;
-  }
+      return;
+    }
 
-  console.log('updateChatList chats.length', JSON.stringify(chats.length));
+    console.log('chats.length', JSON.stringify(chats.length));
 
-  // Clear existing chat items before adding new ones
-  chatList.innerHTML = '';
+    // Clear existing chat items before adding new ones
+    chatList.innerHTML = '';
 
-  const chatElements = await Promise.all(
-    chats.map(async (chat) => {
-      const identicon = await generateIdenticon(chat.address);
-      const contact = contacts[chat.address];
+    const chatElements = await Promise.all(
+      chats.map(async (chat) => {
+        const identicon = await generateIdenticon(chat.address);
+        const contact = contacts[chat.address];
 
-      // If contact doesn't exist, skip this chat item
-      if (!contact) return null;
+        // If contact doesn't exist, skip this chat item
+        if (!contact) return null;
 
-      const latestActivity =
-        contact.messages && contact.messages.length > 0 ? contact.messages[0] : null;
+        const latestActivity = contact.messages && contact.messages.length > 0 ? contact.messages[0] : null;
 
-      // If there's no latest activity (no messages), skip this chat item
-      if (!latestActivity) return null;
+        // If there's no latest activity (no messages), skip this chat item
+        if (!latestActivity) return null;
 
-      let previewHTML = ''; // Default
-      const latestItemTimestamp = latestActivity.timestamp;
+        let previewHTML = ''; // Default
+        const latestItemTimestamp = latestActivity.timestamp;
 
-      // Check if the latest activity is a payment/transfer message
-      if (typeof latestActivity.amount === 'bigint') {
-        // Latest item is a payment/transfer
-        const amountStr = parseFloat(big2str(latestActivity.amount, 18)).toFixed(6);
-        const amountDisplay = `${amountStr} ${latestActivity.symbol || 'LIB'}`;
-        const directionText = latestActivity.my ? '-' : '+';
-        // Create payment preview text
-        previewHTML = `<span class="payment-preview">${directionText} ${amountDisplay}</span>`;
-        // Optionally add memo preview
-        if (latestActivity.message) {
-          // Memo is stored in the 'message' field for transfers
-          previewHTML += ` <span class="memo-preview"> | ${truncateMessage(escapeHtml(latestActivity.message), 25)}</span>`;
+        // Check if the latest activity is a payment/transfer message
+        if (typeof latestActivity.amount === 'bigint') {
+          // Latest item is a payment/transfer
+          const amountStr = parseFloat(big2str(latestActivity.amount, 18)).toFixed(6);
+          const amountDisplay = `${amountStr} ${latestActivity.symbol || 'LIB'}`;
+          const directionText = latestActivity.my ? '-' : '+';
+          // Create payment preview text
+          previewHTML = `<span class="payment-preview">${directionText} ${amountDisplay}</span>`;
+          // Optionally add memo preview
+          if (latestActivity.message) {
+            // Memo is stored in the 'message' field for transfers
+            previewHTML += ` <span class="memo-preview"> | ${truncateMessage(escapeHtml(latestActivity.message), 25)}</span>`;
+          }
+        } else {
+          // Latest item is a regular message
+          const messageText = escapeHtml(latestActivity.message);
+          // Add "You:" prefix for sent messages
+          const prefix = latestActivity.my ? 'You: ' : '';
+          previewHTML = `${prefix}${truncateMessage(messageText, 50)}`; // Truncate for preview
         }
-      } else {
-        // Latest item is a regular message
-        const messageText = escapeHtml(latestActivity.message);
-        // Add "You:" prefix for sent messages
-        const prefix = latestActivity.my ? 'You: ' : '';
-        previewHTML = `${prefix}${truncateMessage(messageText, 50)}`; // Truncate for preview
-      }
 
-      // Use the determined latest timestamp for display
-      const timeDisplay = formatTime(latestItemTimestamp);
-      const contactName =
-        contact.name ||
-        contact.senderInfo?.name ||
-        contact.username ||
-        `${contact.address.slice(0, 8)}...${contact.address.slice(-6)}`;
+        // Use the determined latest timestamp for display
+        const timeDisplay = formatTime(latestItemTimestamp);
+        const contactName = getContactDisplayName(contact);
 
-      // Create the list item element
-      const li = document.createElement('li');
-      li.classList.add('chat-item');
+        // Create the list item element
+        const li = document.createElement('li');
+        li.classList.add('chat-item');
 
-      // Set its inner HTML
-      li.innerHTML = `
+        // Set its inner HTML
+        li.innerHTML = `
             <div class="chat-avatar">${identicon}</div>
             <div class="chat-content">
                 <div class="chat-header">
@@ -1535,280 +976,124 @@ async function updateChatList() {
                     <div class="chat-time">${timeDisplay} <span class="chat-time-chevron"></span></div>
                 </div>
                 <div class="chat-message">
-                    ${previewHTML}
                     ${contact.unread ? `<span class="chat-unread">${contact.unread}</span>` : ''}
+                    ${previewHTML}
                 </div>
             </div>
         `;
 
-      // Add the onclick handler directly to the element
-      li.onclick = () => chatModal.open(chat.address);
+        // Add the onclick handler directly to the element
+        li.onclick = () => chatModal.open(chat.address);
 
-      return li; // Return the created DOM element
-    })
-  );
+        return li; // Return the created DOM element
+      })
+    );
 
-  // Append the created (and non-null) list item elements to the chatList
-  chatElements.forEach((element) => {
-    if (element) {
-      // Only append if the element is not null
-      chatList.appendChild(element);
-    }
-  });
-}
-// refresh wallet balance
-async function updateWalletBalances() {
-  if (!myAccount || !myData || !myData.wallet || !myData.wallet.assets) {
-    console.error('No wallet data available');
-    return;
-  } else if (!isOnline) {
-    console.error('Not online. Not updating wallet balances');
-    return;
-  }
-  await updateAssetPricesIfNeeded();
-  const now = getCorrectedTimestamp();
-  if (!myData.wallet.timestamp) {
-    myData.wallet.timestamp = 0;
-  }
-  if (now - myData.wallet.timestamp < 5000) {
-    return;
-  }
-
-  // TODO - first update the asset prices from a public API
-
-  let totalWalletNetworth = 0.0;
-
-  // Update balances for each asset and address
-  for (const asset of myData.wallet.assets) {
-    let assetTotalBalance = 0n;
-
-    // Get balance for each address in the asset
-    for (const addr of asset.addresses) {
-      try {
-        const address = longAddress(addr.address);
-        const data = await queryNetwork(`/account/${address}/balance`);
-        console.log('balance', data);
-        // Update address balance
-        addr.balance = data.balance || 0n;
-
-        // Add to asset total (convert to USD using asset price)
-        assetTotalBalance += addr.balance;
-      } catch (error) {
-        console.error(`Error fetching balance for address ${addr.address}:`, error);
+    // Append the created (and non-null) list item elements to the chatList
+    chatElements.forEach((element) => {
+      if (element) {
+        // Only append if the element is not null
+        chatList.appendChild(element);
       }
-    }
-    asset.balance = assetTotalBalance;
-    asset.networth = (asset.price * Number(assetTotalBalance)) / Number(wei);
-
-    // Add this asset's total to wallet total
-    totalWalletNetworth += asset.networth;
-  }
-
-  // Update total wallet balance
-  myData.wallet.networth = totalWalletNetworth;
-  myData.wallet.timestamp = now;
-}
-
-async function switchView(view) {
-  // Store the current view for potential rollback
-  const previousView =
-    document.querySelector('.app-screen.active')?.id?.replace('Screen', '') || 'chats';
-  const previousButton = document.querySelector('.nav-button.active');
-
-  // Initialize WebSocket connection regardless of view
-  wsManager.initializeWebSocketManager();
-
-  try {
-    // Direct references to view elements
-    const chatScreen = document.getElementById('chatsScreen');
-    const contactsScreen = document.getElementById('contactsScreen');
-    const walletScreen = document.getElementById('walletScreen');
-
-    // Direct references to button elements
-    const chatButton = document.getElementById('switchToChats');
-    const contactsButton = document.getElementById('switchToContacts');
-    const walletButton = document.getElementById('switchToWallet');
-
-    // Hide all screens
-    chatScreen.classList.remove('active');
-    contactsScreen.classList.remove('active');
-    walletScreen.classList.remove('active');
-
-    // Show selected screen
-    document.getElementById(`${view}Screen`).classList.add('active');
-
-    // Update nav buttons - remove active class from all
-    chatButton.classList.remove('active');
-    contactsButton.classList.remove('active');
-    walletButton.classList.remove('active');
-
-    // Add active class to selected button
-    if (view === 'chats') {
-      chatButton.classList.add('active');
-    } else if (view === 'contacts') {
-      contactsButton.classList.add('active');
-    } else if (view === 'wallet') {
-      walletButton.classList.add('active');
-    }
-
-    // Show header and footer
-    document.getElementById('header').classList.add('active');
-    document.getElementById('footer').classList.add('active');
-
-    // Update header with username if signed in
-    const appName = document.querySelector('.app-name');
-    if (myAccount && myAccount.username) {
-      appName.textContent = `${myAccount.username}`;
-    } else {
-      appName.textContent = '';
-    }
-
-    // Show/hide new chat button
-    const newChatButton = document.getElementById('newChatButton');
-    if (view === 'chats' || view === 'contacts') {
-      newChatButton.classList.add('visible');
-    } else {
-      newChatButton.classList.remove('visible');
-    }
-
-    // Update lists when switching views
-    if (view === 'chats') {
-      chatButton.classList.remove('has-notification');
-      // TODO: maybe need to invoke updateChatData here?
-      await updateChatList();
-      if (isOnline) {
-        if (wsManager && !wsManager.isSubscribed()) {
-          pollChatInterval(pollIntervalNormal);
-        }
-      }
-
-      // focus onto last-item in the footer
-      const footer = document.getElementById('footer');
-      const lastItem = footer.querySelector('.last-item');
-      if (lastItem) {
-        lastItem.focus();
-      }
-    } else if (view === 'contacts') {
-      await updateContactsList();
-    } else if (view === 'wallet') {
-      walletButton.classList.remove('has-notification');
-      await updateWalletView();
-    }
-  } catch (error) {
-    console.error(`Error switching to ${view} view:`, error);
-
-    // Restore previous view if there was an error
-    if (previousView && previousButton) {
-      console.log(`Restoring previous view: ${previousView}`);
-
-      // Get references to screens and buttons
-      const chatScreen = document.getElementById('chatsScreen');
-      const contactsScreen = document.getElementById('contactsScreen');
-      const walletScreen = document.getElementById('walletScreen');
-
-      const chatButton = document.getElementById('switchToChats');
-      const contactsButton = document.getElementById('switchToContacts');
-      const walletButton = document.getElementById('switchToWallet');
-
-      // Hide all screens with direct references
-      chatScreen.classList.remove('active');
-      contactsScreen.classList.remove('active');
-      walletScreen.classList.remove('active');
-
-      // Show previous screen
-      const previousScreenElement = document.getElementById(`${previousView}Screen`);
-      if (previousScreenElement) {
-        previousScreenElement.classList.add('active');
-      }
-
-      // Remove active class from all buttons with direct references
-      chatButton.classList.remove('active');
-      contactsButton.classList.remove('active');
-      walletButton.classList.remove('active');
-
-      // Add active to the correct button based on previousView
-      if (previousView === 'chats') {
-        chatButton.classList.add('active');
-      } else if (previousView === 'contacts') {
-        contactsButton.classList.add('active');
-      } else if (previousView === 'wallet') {
-        walletButton.classList.add('active');
-      } else {
-        // Fallback if previousButton is available
-        previousButton.classList.add('active');
-      }
-
-      // Display error toast to user
-      showToast(`Failed to switch to ${view} view`, 3000, 'error');
-    }
+    });
   }
 }
 
-// Update contacts list UI
-async function updateContactsList() {
-  const contactsList = document.getElementById('contactsList');
-  const contacts = myData.contacts;
+const chatsScreen = new ChatsScreen();
 
-  if (Object.keys(contacts).length === 0) {
-    contactsList.innerHTML = `
+class ContactsScreen {
+  constructor() {
+
+  }
+
+  load() {
+    this.screen = document.getElementById('contactsScreen');
+    this.contactsList = document.getElementById('contactsList');
+    this.contactSearchInput = document.getElementById('contactSearchInput');
+
+    // Handle search input click that's on the contactsScreen
+    this.contactSearchInput.addEventListener('click', () => {
+      searchContactsModal.open();
+    });
+  }
+
+  open() {
+    this.screen.classList.add('active');
+  }
+
+  close() {
+    this.screen.classList.remove('active');
+  }
+
+  isActive() {
+    return this.screen.classList.contains('active');
+  }
+
+  // Update contacts list UI
+  async updateContactsList() {
+    const contacts = myData.contacts;
+
+    if (Object.keys(contacts).length === 0) {
+      this.contactsList.innerHTML = `
             <div class="empty-state">
                 <div style="font-size: 2rem; margin-bottom: 1rem"></div>
                 <div style="font-weight: bold; margin-bottom: 0.5rem">No Contacts Yet</div>
                 <div>Your contacts will appear here</div>
             </div>`;
-    return;
-  }
+      return;
+    }
 
-  // Convert contacts object to array and sort
-  const contactsArray = Object.values(contacts);
+    // Convert contacts object to array and sort
+    const contactsArray = Object.values(contacts);
 
-  // Split into status groups in a single pass
-  const statusGroups = contactsArray.reduce(
-    (acc, contact) => {
-      // 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
-      switch (contact.friend) {
-        case 0:
-          acc.blocked.push(contact);
-          break;
-        case 2:
-          acc.acquaintances.push(contact);
-          break;
-        case 3:
-          acc.friends.push(contact);
-          break;
-        default:
-          acc.others.push(contact);
-      }
-      return acc;
-    },
-    { others: [], acquaintances: [], friends: [], blocked: [] }
-  );
+    // Split into status groups in a single pass
+    const statusGroups = contactsArray.reduce(
+      (acc, contact) => {
+        // 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
+        switch (contact.friend) {
+          case 0:
+            acc.blocked.push(contact);
+            break;
+          case 2:
+            acc.acquaintances.push(contact);
+            break;
+          case 3:
+            acc.friends.push(contact);
+            break;
+          default:
+            acc.others.push(contact);
+        }
+        return acc;
+      },
+      { others: [], acquaintances: [], friends: [], blocked: [] }
+    );
 
-  // Sort each group by name first, then by username if name is not available
-  const sortByName = (a, b) => {
-    const nameA = a.name || a.username || '';
-    const nameB = b.name || b.username || '';
-    return nameA.localeCompare(nameB);
-  };
-  Object.values(statusGroups).forEach((group) => group.sort(sortByName));
+    // Sort each group by name first, then by username if name is not available
+    const sortByName = (a, b) => {
+      const nameA = a.name || a.username || '';
+      const nameB = b.name || b.username || '';
+      return nameA.localeCompare(nameB);
+    };
+    Object.values(statusGroups).forEach((group) => group.sort(sortByName));
 
-  // Group metadata for rendering
-  const groupMeta = [
-    { key: 'friends', label: 'Friends', itemClass: 'chat-item' },
-    { key: 'acquaintances', label: 'Acquaintances', itemClass: 'chat-item' },
-    { key: 'others', label: 'Others', itemClass: 'chat-item' },
-    { key: 'blocked', label: 'Blocked', itemClass: 'chat-item blocked' },
-  ];
+    // Group metadata for rendering
+    const groupMeta = [
+      { key: 'friends', label: 'Friends', itemClass: 'chat-item' },
+      { key: 'acquaintances', label: 'Connections', itemClass: 'chat-item' },
+      { key: 'others', label: 'Tolled', itemClass: 'chat-item' },
+      { key: 'blocked', label: 'Blocked', itemClass: 'chat-item blocked' },
+    ];
 
-  // Helper to render a contact item
-  const renderContactItem = async (contact, itemClass) => {
-    const identicon = await generateIdenticon(contact.address);
-    return `
+    // Helper to render a contact item
+    const renderContactItem = async (contact, itemClass) => {
+      const identicon = await generateIdenticon(contact.address);
+      const contactName = getContactDisplayName(contact);
+      return `
             <li class="${itemClass}">
                 <div class="chat-avatar">${identicon}</div>
                 <div class="chat-content">
                     <div class="chat-header">
-                        <div class="chat-name">${contact.name || contact.senderInfo?.name || contact.username || `${contact.address.slice(0, 8)}...${contact.address.slice(-6)}`}</div>
+                        <div class="chat-name">${contactName}</div>
                     </div>
                     <div class="contact-list-info">
                         ${contact.email || contact.x || contact.phone || `${contact.address.slice(0, 8)}…${contact.address.slice(-6)}`}
@@ -1816,40 +1101,304 @@ async function updateContactsList() {
                 </div>
             </li>
         `;
-  };
+    };
 
-  // Build HTML for all sections
-  let html = '';
-  let allContacts = [];
-  for (const { key, label, itemClass } of groupMeta) {
-    const group = statusGroups[key];
-    if (group.length > 0) {
-      html += `<div class="contact-section-header">${label}</div>`;
-      const items = await Promise.all(
-        group.map((contact) => renderContactItem(contact, itemClass))
-      );
-      html += items.join('');
-      allContacts = allContacts.concat(group);
+    // Build HTML for all sections
+    let html = '';
+    let allContacts = [];
+    for (const { key, label, itemClass } of groupMeta) {
+      const group = statusGroups[key];
+      if (group.length > 0) {
+        html += `<div class="contact-section-header">${label}</div>`;
+        const items = await Promise.all(group.map((contact) => renderContactItem(contact, itemClass)));
+        html += items.join('');
+        allContacts = allContacts.concat(group);
+      }
     }
+
+    this.contactsList.innerHTML = html;
+
+    // Add click handlers to contact items
+    this.contactsList.querySelectorAll('.chat-item').forEach((item, index) => {
+      const contact = allContacts[index];
+      item.onclick = () => {
+        contactInfoModal.open(createDisplayInfo(contact));
+      };
+    });
+  }
+}
+
+const contactsScreen = new ContactsScreen();
+
+
+class MenuModal {
+  constructor() {
+    this.isSignoutExit = false;
   }
 
-  contactsList.innerHTML = html;
+  load() {
+    this.modal = document.getElementById('menuModal');
+    this.closeButton = document.getElementById('closeMenu');
+    this.closeButton.addEventListener('click', () => this.close());
+    this.profileButton = document.getElementById('openAccountForm');
+    this.profileButton.addEventListener('click', () => myProfileModal.open());
+    this.tollButton = document.getElementById('openToll');
+    this.tollButton.addEventListener('click', () => tollModal.open());
+    this.backupButton = document.getElementById('openExportForm');
+    this.backupButton.addEventListener('click', () => backupAccountModal.open());
+    this.validatorButton = document.getElementById('openValidator');
+    this.validatorButton.addEventListener('click', () => validatorStakingModal.open());
+    this.inviteButton = document.getElementById('openInvite');
+    this.inviteButton.addEventListener('click', () => inviteModal.open());
+    this.explorerButton = document.getElementById('openExplorer');
+    this.explorerButton.addEventListener('click', () => {window.open('./explorer', '_blank');});
+    this.networkButton = document.getElementById('openMonitor');
+    this.networkButton.addEventListener('click', () => {window.open('./network', '_blank');});
+    this.removeButton = document.getElementById('openRemoveAccount');
+    this.removeButton.addEventListener('click', () => removeAccountModal.open());
+    this.contactUsButton = document.getElementById('openContact');
+    this.contactUsButton.addEventListener('click', () => contactModal.open());
+    this.aboutButton = document.getElementById('openAbout');
+    this.aboutButton.addEventListener('click', () => aboutModal.open());
+    this.signOutButton = document.getElementById('handleSignOut');
+    this.signOutButton.addEventListener('click', () => this.handleSignOut());
+  }
 
-  // Add click handlers to contact items
-  document.querySelectorAll('#contactsList .chat-item').forEach((item, index) => {
-    const contact = allContacts[index];
-    item.onclick = () => {
-      contactInfoModal.open(createDisplayInfo(contact));
-    };
-  });
+  open() {
+    this.modal.classList.add('active');
+    enterFullscreen();
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+    enterFullscreen();
+  }
+
+  isActive() {
+    return this.modal.classList.contains('active');
+  }
+  
+  handleSignOut() {
+    // Clear intervals
+    if (updateWebSocketIndicatorIntervalId && wsManager) {
+      clearInterval(updateWebSocketIndicatorIntervalId);
+      updateWebSocketIndicatorIntervalId = null;
+    }
+    if (checkPendingTransactionsIntervalId) {
+      clearInterval(checkPendingTransactionsIntervalId);
+      checkPendingTransactionsIntervalId = null;
+    }
+    if (getSystemNoticeIntervalId) {
+      clearInterval(getSystemNoticeIntervalId);
+      getSystemNoticeIntervalId = null;
+    }
+    // Stop camera if it's running
+    if (typeof scanQRModal !== 'undefined' && scanQRModal.camera.scanInterval) {
+      scanQRModal.stopCamera();
+    }
+
+    //    const shouldLeave = confirm('Do you want to leave this page?');
+    //    if (shouldLeave == false) { return }
+
+    // Clean up WebSocket connection
+    if (wsManager) {
+      wsManager.disconnect();
+      wsManager = null;
+    }
+
+    // Save myData to localStorage if it exists
+    saveState();
+    /*
+      if (myData && myAccount) {
+          localStorage.setItem(`${myAccount.username}_${myAccount.netid}`, stringify(myData));
+      }
+  */
+
+    // Close all modals
+    menuModal.close();
+    myProfileModal.close();
+
+    // Hide header and footer
+    header.close();
+    footer.close();
+    footer.newChatButton.classList.remove('visible');
+
+    // Reset header text
+    header.setText('Liberdus');
+
+    // Hide all app screens
+    document.querySelectorAll('.app-screen').forEach((screen) => {
+      screen.classList.remove('active');
+    });
+
+    // Show welcome screen
+    welcomeScreen.open();
+
+    this.isSignoutExit = true;
+
+    // Add offline fallback
+    if (!navigator.onLine) {
+      // Just reset the UI state without clearing storage
+      return;
+    }
+
+    // Only reload if online
+    window.location.reload();
+  }
 }
 
-function toggleMenu() {
-  document.getElementById('menuModal').classList.toggle('active');
-  //    document.getElementById('accountModal').classList.remove('active');
+const menuModal = new MenuModal();
+
+class WalletScreen {
+  constructor() {
+
+  }
+
+  load() {
+    // screen
+    this.screen = document.getElementById('walletScreen');
+    // balance elements
+    this.totalBalance = document.getElementById('walletTotalBalance');
+    this.refreshBalanceButton = document.getElementById('refreshBalance');
+    // assets list
+    this.assetsList = document.getElementById('assetsList');
+    // action buttons
+    this.openSendAssetFormModalButton = document.getElementById('openSendAssetFormModal');
+    this.openReceiveModalButton = document.getElementById('openReceiveModal');
+    this.openHistoryModalButton = document.getElementById('openHistoryModal');
+
+    this.openSendAssetFormModalButton.addEventListener('click', () => {
+      sendAssetFormModal.open();
+    });
+    this.openReceiveModalButton.addEventListener('click', () => {
+      receiveModal.open();
+    });
+    this.openHistoryModalButton.addEventListener('click', () => {
+      historyModal.open();
+    });
+
+    // Add refresh balance button handler
+    this.refreshBalanceButton.addEventListener('click', async () => {
+      
+      // Add active class for animation
+      this.refreshBalanceButton.classList.add('active');
+      
+      // Remove active class after animation completes
+      setTimeout(() => {
+        this.refreshBalanceButton.classList.remove('active');
+        // Force blur to remove focus
+        this.refreshBalanceButton.blur();
+      }, 300);
+
+      // await updateWalletBalances();
+      this.updateWalletView();
+    });
+  }
+
+  open() {
+    this.screen.classList.add('active');
+  }
+
+  close() {
+    this.screen.classList.remove('active');
+  }
+
+  isActive() {
+    return this.screen.classList.contains('active');
+  }
+
+  // Update wallet view; refresh wallet
+  async updateWalletView() {
+    const walletData = myData.wallet;
+
+    await this.updateWalletBalances();
+
+    // Update total networth
+    this.totalBalance.textContent = (walletData.networth || 0).toFixed(2);
+
+    if (!Array.isArray(walletData.assets) || walletData.assets.length === 0) {
+      this.assetsList.innerHTML = `
+              <div class="empty-state">
+                  <div style="font-size: 2rem; margin-bottom: 1rem"></div>
+                  <div style="font-weight: bold; margin-bottom: 0.5rem">No Assets Yet</div>
+                  <div>Your assets will appear here</div>
+              </div>`;
+      return;
+    }
+
+    this.assetsList.innerHTML = walletData.assets
+      .map((asset) => {
+        console.log('asset balance', asset, asset.balance);
+        return `
+              <div class="asset-item">
+                  <div class="asset-logo"><img src="./media/liberdus_logo_50.png" class="asset-logo"></div>
+                  <div class="asset-info">
+                      <div class="asset-name">${asset.name}</div>
+                      <div class="asset-symbol">$${asset.price} / ${asset.symbol}</div>
+                  </div>
+                  <div class="asset-balance">${(Number(asset.balance) / Number(wei)).toFixed(6)}<br><span class="asset-symbol">$${asset.networth.toFixed(6)}</span></div>
+              </div>
+          `;
+      })
+      .join('');
+  }
+
+  // refresh wallet balance
+  async updateWalletBalances() {
+    if (!myAccount || !myData || !myData.wallet || !myData.wallet.assets) {
+      console.error('No wallet data available');
+      return;
+    } else if (!isOnline) {
+      console.error('Not online. Not updating wallet balances');
+      return;
+    }
+    await updateAssetPricesIfNeeded();
+    const now = getCorrectedTimestamp();
+    if (!myData.wallet.timestamp) {
+      myData.wallet.timestamp = 0;
+    }
+    if (now - myData.wallet.timestamp < 5000) {
+      return;
+    }
+
+    // TODO - first update the asset prices from a public API
+
+    let totalWalletNetworth = 0.0;
+
+    // Update balances for each asset and address
+    for (const asset of myData.wallet.assets) {
+      let assetTotalBalance = 0n;
+
+      // Get balance for each address in the asset
+      for (const addr of asset.addresses) {
+        try {
+          const address = longAddress(addr.address);
+          const data = await queryNetwork(`/account/${address}/balance`);
+          console.log('balance', data);
+          // Update address balance
+          addr.balance = data.balance || 0n;
+
+          // Add to asset total (convert to USD using asset price)
+          assetTotalBalance += addr.balance;
+        } catch (error) {
+          console.error(`Error fetching balance for address ${addr.address}:`, error);
+        }
+      }
+      asset.balance = assetTotalBalance;
+      asset.networth = (asset.price * Number(assetTotalBalance)) / Number(wei);
+
+      // Add this asset's total to wallet total
+      totalWalletNetworth += asset.networth;
+    }
+
+    // Update total wallet balance
+    myData.wallet.networth = totalWalletNetworth;
+    myData.wallet.timestamp = now;
+  }
 }
 
-// create new contact
+const walletScreen = new WalletScreen();
+
 /**
  * createNewContact
  * @param {string} addr - the address of the contact
@@ -1877,7 +1426,10 @@ function createNewContact(addr, username, friendStatus = 1) {
 }
 
 /**
- * updateTollAmountUI
+ * updateTollAmountUI updates the toll amount UI for a given contact
+ * sets contactModal.toll and contactModal.tollUnit to the bigint toll and string tollUnit of the contact
+ * @param {string} address - the address of the contact
+ * @returns {void}
  */
 function updateTollAmountUI(address) {
   const tollValue = document.getElementById('tollValue');
@@ -1905,14 +1457,14 @@ function updateTollAmountUI(address) {
   }
   let display;
   if (contact.tollRequiredToSend == 1) {
-    display = `${mainString} (${otherString})`;
+    display = `${mainString} = ${otherString}`;
   } else if (contact.tollRequiredToSend == 2) {
     tollValue.style.color = 'red';
     display = `blocked`;
   } else {
     // light green used to show success
     tollValue.style.color = '#28a745';
-    display = `free (${mainString} (${otherString}))`;
+    display = `free; ${mainString} = ${otherString}`;
   }
   tollValue.textContent = display;
 
@@ -1943,10 +1495,7 @@ async function updateTollRequired(address) {
     if (contactAccountData?.error === 'No account with the given chatId') {
       console.warn(`chatId has not been created yet: ${address}`, contactAccountData.error);
     } else if (contactAccountData?.error) {
-      console.error(
-        `Error querying toll required for address: ${address}`,
-        contactAccountData.error
-      );
+      console.error(`Error querying toll required for address: ${address}`, contactAccountData.error);
       return;
     }
 
@@ -1954,7 +1503,7 @@ async function updateTollRequired(address) {
     localContact.tollRequiredToSend = contactAccountData.toll.required[toIndex];
     localContact.tollRequiredToReceive = contactAccountData.toll.required[myIndex];
 
-    if (chatModal.modal.classList.contains('active') && chatModal.address === address) {
+    if (chatModal.isActive() && chatModal.address === address) {
       updateTollAmountUI(address);
     }
 
@@ -1977,333 +1526,221 @@ async function updateTollValue(address) {
   const queriedToll = contactAccountData?.account?.data?.toll; // type bigint
   const queriedTollUnit = contactAccountData?.account?.data?.tollUnit; // type string */
 
-  // update the toll value in the UI if the queried toll value is different from the toll field in localStorage
-  if (
-    myData.contacts[address].toll != queriedToll &&
-    myData.contacts[address].tollUnit != queriedTollUnit
-  ) {
+  // update the toll value in the UI if the queried toll value is different from the toll value or toll unit in localStorage
+  if (myData.contacts[address].toll != queriedToll || myData.contacts[address].tollUnit != queriedTollUnit) {
     myData.contacts[address].toll = queriedToll;
     myData.contacts[address].tollUnit = queriedTollUnit;
     // if correct modal is open for this address, update the toll value
-    if (chatModal.modal.classList.contains('active') && chatModal.address === address) {
+    if (chatModal.isActive() && chatModal.address === address) {
       updateTollAmountUI(address);
     }
   } else {
-    console.log(
-      `Returning early since queried toll value is the same as the toll field in localStorage`
-    );
+    console.log(`Returning early since queried toll value is the same as the toll field in localStorage`);
     // return early
     return;
   }
 }
 
-function openReceiveModal() {
-  const modal = document.getElementById('receiveModal');
-  modal.classList.add('active');
 
-  // Get wallet data
-  const walletData = myData.wallet;
-
-  // Get references to elements
-  const assetSelect = document.getElementById('receiveAsset');
-  const amountInput = document.getElementById('receiveAmount');
-  const memoInput = document.getElementById('receiveMemo');
-
-  // Populate assets dropdown
-  // Clear existing options
-  assetSelect.innerHTML = '';
-
-  // Check if wallet assets exist
-  if (walletData && walletData.assets && walletData.assets.length > 0) {
-    // Add options for each asset
-    walletData.assets.forEach((asset, index) => {
-      const option = document.createElement('option');
-      option.value = index;
-      option.textContent = `${asset.name} (${asset.symbol})`;
-      assetSelect.appendChild(option);
-    });
-    console.log(`Populated ${walletData.assets.length} assets in dropdown`);
-  } else {
-    // Add a default option if no assets
-    const option = document.createElement('option');
-    option.value = 0;
-    option.textContent = 'Liberdus (LIB)';
-    assetSelect.appendChild(option);
-    console.log('No wallet assets found, using default');
+class ScanQRModal {
+  constructor() {
+    this.fillFunction = null;
+    this.camera = {
+      stream: null,
+      scanning: false,
+      scanInterval: null
+    };
   }
 
-  // Clear input fields
-  amountInput.value = '';
-  memoInput.value = '';
+  load() {
+    this.modal = document.getElementById('qrScanModal');
+    this.closeButton = document.getElementById('closeQRScanModal');
+    this.video = document.getElementById('video');
+    this.canvasElement = document.getElementById('canvas');
+    this.canvas = this.canvasElement.getContext('2d');
 
-  // Initial update for addresses based on the first asset
-  updateReceiveAddresses();
-}
-
-function closeReceiveModal() {
-  const modal = document.getElementById('receiveModal');
-  // Hide the modal
-  modal.classList.remove('active');
-}
-
-function updateReceiveAddresses() {
-  // Update display address
-  updateDisplayAddress();
-}
-
-function updateDisplayAddress() {
-  const displayAddress = document.getElementById('displayAddress');
-  const qrcodeContainer = document.getElementById('qrcode');
-
-  // Clear previous QR code
-  qrcodeContainer.innerHTML = '';
-
-  const address = myAccount.keys.address;
-  displayAddress.textContent = '0x' + address;
-
-  // Generate QR code with payment data
-  try {
-    updateQRCode();
-    console.log('QR code updated with payment data');
-  } catch (error) {
-    console.error('Error updating QR code:', error);
-
-    // Fallback to basic address QR code if there's an error
-    new QRCode(qrcodeContainer, {
-      text: '0x' + address,
-      width: 200,
-      height: 200,
-    });
-    console.log('Fallback to basic address QR code');
-  }
-}
-
-// Create QR payment data object based on form values
-function createQRPaymentData() {
-  // Get selected asset
-  const assetSelect = document.getElementById('receiveAsset');
-  const assetIndex = parseInt(assetSelect.value, 10) || 0;
-
-  // Default asset info in case we can't find the selected asset
-  let assetId = 'liberdus';
-  let symbol = 'LIB';
-
-  // Try to get the selected asset
-  try {
-    if (myData && myData.wallet && myData.wallet.assets && myData.wallet.assets.length > 0) {
-      const asset = myData.wallet.assets[assetIndex];
-      if (asset) {
-        assetId = asset.id || 'liberdus';
-        symbol = asset.symbol || 'LIB';
-        console.log(`Selected asset: ${asset.name} (${symbol})`);
-      } else {
-        console.log(`Asset not found at index ${assetIndex}, using defaults`);
-      }
-    } else {
-      console.warn('Wallet assets not available, using default asset');
-    }
-  } catch (error) {
-    console.error('Error accessing asset data:', error);
+    this.closeButton.addEventListener('click', () => { this.close(); });
   }
 
-  // Build payment data object
-  const paymentData = {
-    u: myAccount.username, // username
-    i: assetId, // assetId
-    s: symbol, // symbol
-  };
-
-  // Add optional fields if they have values
-  const amount = document.getElementById('receiveAmount').value.trim();
-  if (amount) {
-    paymentData.a = amount;
+  open() {
+    this.modal.classList.add('active');
+    this.startCamera();
   }
 
-  const memo = document.getElementById('receiveMemo').value.trim();
-  if (memo) {
-    paymentData.m = memo;
+  close() {
+    this.modal.classList.remove('active');
+    this.stopCamera();
   }
 
-  return paymentData;
-}
-
-// Update QR code with current payment data
-function updateQRCode() {
-  const qrcodeContainer = document.getElementById('qrcode');
-  const previewElement = document.getElementById('qrDataPreview'); // Get preview element
-  qrcodeContainer.innerHTML = '';
-  previewElement.style.display = 'none'; // Hide preview/error area initially
-  previewElement.innerHTML = ''; // Clear any previous error message
-
-  try {
-    // Get payment data
-    const paymentData = createQRPaymentData();
-    console.log('Created payment data:', JSON.stringify(paymentData, null, 2));
-
-    // Convert to JSON and encode as base64
-    const jsonData = JSON.stringify(paymentData);
-    const base64Data = btoa(jsonData);
-
-    // Create URI with liberdus:// prefix
-    const qrText = `liberdus://${base64Data}`;
-    console.log('QR code text length:', qrText.length);
-    console.log(
-      'QR code text (first 100 chars):',
-      qrText.substring(0, 100) + (qrText.length > 100 ? '...' : '')
-    );
-
-    const gifBytes = qr.encodeQR(qrText, 'gif', { scale: 4 });
-    // Convert the raw bytes to a base64 data URL
-    const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(gifBytes)));
-    const dataUrl = 'data:image/gif;base64,' + base64;
-    // Create an image element and set its source to the data URL
-    const img = document.createElement('img');
-    img.src = dataUrl;
-    img.width = 200;
-    img.height = 200;
-    // Add the image to the container
-    qrcodeContainer.appendChild(img);
-
-    return qrText;
-  } catch (error) {
-    console.error('Error in updateQRCode:', error);
-
-    qrcodeContainer.innerHTML = ''; // Clear the container before adding fallback QR
-
-    // Fallback to basic username QR code in liberdus:// format
+  async startCamera() {
     try {
-      // Use short key 'u' for username
-      const fallbackData = { u: myAccount.username };
-      const fallbackJsonData = JSON.stringify(fallbackData);
-      const fallbackBase64Data = btoa(fallbackJsonData);
-      const fallbackQrText = `liberdus://${fallbackBase64Data}`;
-
-      const gifBytes = qr.encodeQR(fallbackQrText, 'gif', { scale: 4 });
-      // Convert the raw bytes to a base64 data URL
-      const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(gifBytes)));
-      const dataUrl = 'data:image/gif;base64,' + base64;
-      // Create an image element and set its source to the data URL
-      const img = document.createElement('img');
-      img.src = dataUrl;
-      img.width = 200;
-      img.height = 200;
-      // Add the image to the container
-      qrcodeContainer.appendChild(img);
-
-      console.log('Fallback QR code generated with username URI');
-      console.error('Error generating full QR', error);
-
-      // Show error directly in the preview element
-      if (previewElement) {
-        previewElement.innerHTML = `<span style="color: red;">Error generating full QR</span><br> Generating QR with only username. <br> Username: ${myAccount.username}`;
-        previewElement.style.display = 'block'; // Make the error visible
+      // First check if camera API is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API is not supported in this browser');
       }
 
-      return fallbackQrText; // Return the generated fallback URI
-    } catch (fallbackError) {
-      // If even the fallback fails (e.g., username missing), show a simple error
-      console.error('Error generating fallback QR code:', fallbackError);
-      qrcodeContainer.innerHTML =
-        '<p style="color: red; text-align: center;">Failed to generate QR code.</p>';
-      if (previewElement) {
-        previewElement.innerHTML = '<p style="color: red;">Error generating QR code.</p>';
-        previewElement.style.display = 'block'; // Make the error visible
+      // Stop any existing stream
+      if (this.camera.stream) {
+        this.stopCamera();
       }
-      return null; // Indicate complete failure
+
+      // Hide previous results
+      // resultContainer.classList.add('hidden');
+
+      // statusMessage.textContent = 'Accessing camera...';
+      // Request camera access with specific error handling
+      try {
+        this.camera.stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment', // Use back camera
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+      } catch (mediaError) {
+        // Handle specific getUserMedia errors
+        switch (mediaError.name) {
+          case 'NotAllowedError':
+            throw new Error(
+              'Camera access was denied. Please check your browser settings and grant permission to use the camera.'
+            );
+          case 'NotFoundError':
+            throw new Error('No camera device was found on your system.');
+          case 'NotReadableError':
+            throw new Error('Camera is already in use by another application or encountered a hardware error.');
+          case 'SecurityError':
+            throw new Error("Camera access was blocked by your browser's security policy.");
+          case 'AbortError':
+            throw new Error('Camera access was cancelled.');
+          default:
+            throw new Error(`Camera error: ${mediaError.message}`);
+        }
+      }
+
+      // Connect the camera stream to the video element
+      this.video.srcObject = this.camera.stream;
+      this.video.setAttribute('playsinline', true); // required for iOS Safari
+
+      // When video is ready to play
+      this.video.onloadedmetadata = () => {
+        this.video.play();
+
+        // Enable scanning and update button
+        this.camera.scanning = true;
+        // toggleButton.textContent = 'Stop Camera';
+
+        // Start scanning for QR codes
+        // Use interval instead of requestAnimationFrame for better control over scan frequency
+        this.camera.scanInterval = setInterval(() => this.readQRCode(), 100); // scan every 100ms (10 times per second)
+
+        // statusMessage.textContent = 'Camera active. Point at a QR code.';
+      };
+
+      // Add error handler for video element
+      this.video.onerror = function (error) {
+        console.error('Video element error:', error);
+        this.stopCamera();
+        throw new Error('Failed to start video stream');
+      };
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      this.stopCamera(); // Ensure we clean up any partial setup
+
+      // Show user-friendly error message
+      showToast(error.message || 'Failed to access camera. Please check your permissions and try again.', 5000, 'error');
+
+      // Re-throw the error if you need to handle it further up
+      throw error;
     }
   }
-}
 
-async function copyAddress() {
-  const address = document.getElementById('displayAddress').textContent;
-  try {
-    await navigator.clipboard.writeText(address);
-    const button = document.getElementById('copyAddress');
-    button.classList.add('success');
-    setTimeout(() => {
-      button.classList.remove('success');
-    }, 2000);
-  } catch (err) {
-    console.error('Failed to copy:', err);
-  }
-}
-
-// Function to handle QR code scanning Omar
-function openQRScanModal() {
-  const modal = document.getElementById('qrScanModal');
-  modal.classList.add('active');
-  startCamera(openQRScanModal.fill);
-}
-openQRScanModal.fill = null;
-
-function closeQRScanModal() {
-  document.getElementById('qrScanModal').classList.remove('active');
-  stopCamera();
-}
-
-function fillPaymentFromQR(data) {
-  console.log('Attempting to fill payment form from QR:', data);
-
-  // Explicitly check for the required prefix
-  if (!data || !data.startsWith('liberdus://')) {
-    console.error("Invalid payment QR code format. Missing 'liberdus://' prefix.", data);
-    showToast('Invalid payment QR code format.', 3000, 'error');
-    // Optionally clear fields or leave them as they were
-    document.getElementById('sendToAddress').value = '';
-    document.getElementById('sendAmount').value = '';
-    document.getElementById('sendMemo').value = '';
-    return; // Stop processing if the format is wrong
-  }
-
-  // Clear existing fields first
-  document.getElementById('sendToAddress').value = '';
-  document.getElementById('sendAmount').value = '';
-  document.getElementById('sendMemo').value = '';
-
-  try {
-    // Remove the prefix and process the base64 data
-    const base64Data = data.substring('liberdus://'.length);
-    const jsonData = atob(base64Data);
-    const paymentData = JSON.parse(jsonData);
-
-    console.log('Read payment data:', JSON.stringify(paymentData, null, 2));
-
-    if (paymentData.u) {
-      document.getElementById('sendToAddress').value = paymentData.u;
-    }
-    if (paymentData.a) {
-      document.getElementById('sendAmount').value = paymentData.a;
-    }
-    if (paymentData.m) {
-      document.getElementById('sendMemo').value = paymentData.m;
+  stopCamera() {
+    if (this.camera.scanInterval) {
+      clearInterval(this.camera.scanInterval);
+      this.camera.scanInterval = null;
     }
 
-    // Trigger username validation and amount validation
-    document.getElementById('sendToAddress').dispatchEvent(new Event('input'));
-    document.getElementById('sendAmount').dispatchEvent(new Event('input'));
-  } catch (error) {
-    console.error('Error parsing payment QR data:', error, data);
-    showToast('Failed to parse payment QR data.', 3000, 'error');
-    // Clear fields on error
-    document.getElementById('sendToAddress').value = '';
-    document.getElementById('sendAmount').value = '';
-    document.getElementById('sendMemo').value = '';
+    if (this.camera.stream) {
+      this.camera.stream.getTracks().forEach((track) => track.stop());
+      this.camera.stream = null;
+      this.video.srcObject = null;
+      this.camera.scanning = false;
+    }
   }
+
+  readQRCode() {
+    if (this.camera.scanning && this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
+      // Set canvas size to match video dimensions
+      this.canvasElement.height = this.video.videoHeight;
+      this.canvasElement.width = this.video.videoWidth;
+
+      // Draw video frame onto canvas
+      this.canvas.drawImage(this.video, 0, 0, this.canvasElement.width, this.canvasElement.height);
+
+      // Get image data for QR processing
+      const imageData = this.canvas.getImageData(0, 0, this.canvasElement.width, this.canvasElement.height);
+
+      try {
+        // Process image with qr.js library
+        // qr.decodeQR expects an object { data, height, width }
+        const decodedText = qr.decodeQR({
+          data: imageData.data,
+          width: imageData.width,
+          height: imageData.height,
+        });
+
+        // If QR code found and decoded
+        if (decodedText) {
+          console.log('QR Code detected:', decodedText);
+          this.handleSuccessfulScan(decodedText);
+        }
+      } catch (error) {
+        // qr.decodeQR throws error if not found or on error
+        //console.log('QR scanning error or not found:', error); // Optional: Log if needed
+      }
+    }
+  }
+
+  handleSuccessfulScan(data) {
+    // const scanHighlight = document.getElementById('scan-highlight');
+    // Stop scanning
+    if (this.camera.scanInterval) {
+      clearInterval(this.camera.scanInterval);
+      this.camera.scanInterval = null;
+    }
+
+    this.camera.scanning = false;
+
+    // Stop the camera
+    this.stopCamera();
+
+    /*
+      // Show highlight effect
+      scanHighlight.classList.add('active');
+      setTimeout(() => {
+          scanHighlight.classList.remove('active');
+      }, 500);
+  */
+
+    // Display the result
+    //    qrResult.textContent = data;
+    //    resultContainer.classList.remove('hidden');
+    console.log('Raw QR Data Scanned:', data);
+    if (this.fillFunction) {
+      // Call the assigned fill function (e.g., fillPaymentFromQR or fillStakeAddressFromQR)
+      this.fillFunction(data);
+    }
+
+    this.close();
+
+    // Update status
+    //    statusMessage.textContent = 'QR code detected! Camera stopped.';
+  }
+
 }
 
-function fillStakeAddressFromQR(data) {
-  console.log('Filling stake address from QR data:', data);
-
-  // Directly set the value of the stakeNodeAddress input field
-  const stakeNodeAddressInput = document.getElementById('stakeNodeAddress');
-  if (stakeNodeAddressInput) {
-    stakeNodeAddressInput.value = data;
-    stakeNodeAddressInput.dispatchEvent(new Event('input'));
-  } else {
-    console.error('Stake node address input field not found!');
-    showToast('Could not find stake address field.', 3000, 'error');
-  }
-}
+const scanQRModal = new ScanQRModal();
 
 /**
  * Validate the balance of the user
@@ -2313,13 +1750,10 @@ function fillStakeAddressFromQR(data) {
  * @returns {Promise<boolean>} - A promise that resolves to true if the balance is sufficient, false otherwise
  */
 async function validateBalance(amount, assetIndex = 0, balanceWarning = null) {
-  if (!amount) {
-    if (balanceWarning) balanceWarning.style.display = 'none';
-    console.warn('[validateBalance] amount is 0');
-    return false;
-  } else if (amount < 0) {
-    console.warn('[validateBalance] amount is negative');
-    if (balanceWarning) balanceWarning.style.display = 'inline';
+  if (balanceWarning) balanceWarning.style.display = 'none';
+  // not checking for 0 since we allow 0 amount for messages when toll is not required
+  if (amount < 0n) {
+    if (balanceWarning) balanceWarning.style.display = 'block';
     balanceWarning.textContent = 'Amount cannot be negative';
     return false;
   }
@@ -2327,7 +1761,7 @@ async function validateBalance(amount, assetIndex = 0, balanceWarning = null) {
   await getNetworkParams();
   const asset = myData.wallet.assets[assetIndex];
   const feeInWei = parameters.current.transactionFee || 1n * wei;
-  const totalRequired = bigxnum2big(1n, amount.toString()) + feeInWei;
+  const totalRequired = amount + feeInWei;
   const hasInsufficientBalance = BigInt(asset.balance) < totalRequired;
 
   if (balanceWarning) {
@@ -2343,307 +1777,264 @@ async function validateBalance(amount, assetIndex = 0, balanceWarning = null) {
   return !hasInsufficientBalance;
 }
 
-// The user has filled out the form to send assets to a recipient and clicked the Send button
-// The recipient account may not exist in myData.contacts and might have to be created
-/**
- * Handle the send asset event
- * @param {Event} event - The event object
- * @returns {Promise<void>}- A promise that resolves when the send asset event is handled
- */
-async function handleSendAsset(event) {
-  event.preventDefault();
-  const confirmButton = document.getElementById('confirmSendButton');
-  const cancelButton = document.getElementById('cancelSendButton');
-  const username = normalizeUsername(document.getElementById('sendToAddress').value);
-
-  // if it's your own username disable the send button
-  if (username == myAccount.username) {
-    confirmButton.disabled = true;
-    showToast('You cannot send assets to yourself', 3000, 'error');
-    return;
+// Sign In Modal Management
+class SignInModal {
+  constructor() {
+    this.preselectedUsername = null;
   }
 
-  if (getCorrectedTimestamp() - handleSendAsset.timestamp < 2000 || confirmButton.disabled) {
-    return;
+  load () {
+    this.modal = document.getElementById('signInModal');
+    this.usernameSelect = document.getElementById('username');
+    this.submitButton = document.querySelector('#signInForm button[type="submit"]');
+    this.removeButton = document.getElementById('removeAccountButton');
+    this.notFoundMessage = document.getElementById('usernameNotFound');
+    this.signInModalLastItem = document.getElementById('signInModalLastItem');
+    this.backButton = document.getElementById('closeSignInModal');
+
+    // Sign in form submission
+    document.getElementById('signInForm').addEventListener('submit', (event) => this.handleSignIn(event));
+    
+    // Username selection change
+    this.usernameSelect.addEventListener('change', () => this.handleUsernameChange());
+    
+    // Remove account button
+    this.removeButton.addEventListener('click', () => this.handleRemoveAccount());
+
+    // Back button
+    this.backButton.addEventListener('click', () => this.close());
   }
 
-  confirmButton.disabled = true;
-  cancelButton.disabled = true;
+  async open(preselectedUsername_) {
+    // Get existing accounts
+    const { netid } = network;
+    const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
+    const netidAccounts = existingAccounts.netids[netid];
+    const usernames = netidAccounts?.usernames ? Object.keys(netidAccounts.usernames) : [];
+    this.preselectedUsername = preselectedUsername_;
 
-  handleSendAsset.timestamp = getCorrectedTimestamp();
-  const wallet = myData.wallet;
-  const assetIndex = document.getElementById('sendAsset').value; // TODO include the asset id and symbol in the tx
-  const amount = bigxnum2big(wei, document.getElementById('sendAmount').value);
-  const memoIn = document.getElementById('sendMemo').value || '';
-  const memo = memoIn.trim();
-  const keys = myAccount.keys;
-  let toAddress;
+    // First show the modal so we can properly close it if needed
+    this.modal.classList.add('active');
 
-  // Validate amount including transaction fee
-  if (!(await validateBalance(amount, assetIndex))) {
-    await getNetworkParams();
-    const txFeeInLIB = parameters.current.transactionFee || 1n * wei;
-    const balance = BigInt(wallet.assets[assetIndex].balance);
-    const amountStr = big2str(amount, 18).slice(0, -16);
-    const feeStr = big2str(txFeeInLIB, 18).slice(0, -16);
-    const balanceStr = big2str(balance, 18).slice(0, -16);
-    alert(`Insufficient balance: ${amountStr} + ${feeStr} (fee) > ${balanceStr} LIB`);
-    return;
-  }
-
-  // Validate username - must be username; address not supported
-  if (username.startsWith('0x')) {
-    alert('Address not supported; enter username instead.');
-    return;
-  }
-  if (username.length < 3) {
-    alert('Username too short');
-    return;
-  }
-  try {
-    // Look up username on network
-    const usernameBytes = utf82bin(username);
-    const usernameHash = hashBytes(usernameBytes);
-    /*
-        const randomGateway = network.gateways[Math.floor(Math.random() * network.gateways.length)];
-        const response = await fetch(`${randomGateway.protocol}://${randomGateway.host}:${randomGateway.port}/address/${usernameHash}`);
-        const data = await response.json();
-*/
-    const data = await queryNetwork(`/address/${usernameHash}`);
-    if (!data || !data.address) {
-      alert('Username not found');
+    // If no accounts exist, close modal and open Create Account modal
+    if (usernames.length === 0) {
+      this.close();
+      createAccountModal.open();
       return;
     }
-    toAddress = normalizeAddress(data.address);
-  } catch (error) {
-    console.error('Error looking up username:', error);
-    alert('Error looking up username');
-    return;
-  }
 
-  if (!myData.contacts[toAddress]) {
-    createNewContact(toAddress, username, 2);
-  }
+    // Populate select with usernames
+    this.usernameSelect.innerHTML = `
+      <option value="" disabled selected hidden>Select an account</option>
+      ${usernames.map((username) => `<option value="${username}">${username}</option>`).join('')}
+    `;
 
-  // Get recipient's public key from contacts
-  let recipientPubKey = myData.contacts[toAddress]?.public;
-  let pqRecPubKey = myData.contacts[toAddress]?.pqPublic;
-  let pqEncSharedKey = '';
-  if (!recipientPubKey || !pqRecPubKey) {
-    const recipientInfo = await queryNetwork(`/account/${longAddress(toAddress)}`);
-    if (!recipientInfo?.account?.publicKey) {
-      console.log(`no public key found for recipient ${toAddress}`);
+    // If a username should be auto-selected (either preselect or only one account), do it
+    const autoSelect = preselectedUsername_ && usernames.includes(preselectedUsername_) ? preselectedUsername_ : null;
+    if (autoSelect) {
+      this.usernameSelect.value = autoSelect;
+      await this.handleUsernameChange();
+      if (this.notFoundMessage.textContent === 'not found') {
+        // remove not found and make button available
+        this.notFoundMessage.textContent = '';
+        this.notFoundMessage.style.display = 'none';
+        this.submitButton.style.display = 'inline';
+        this.submitButton.disabled = false;
+        this.submitButton.textContent = 'Sign In';
+        this.removeButton.style.display = 'none';
+        this.handleSignIn();
+      }
       return;
     }
-    if (recipientInfo.account.publicKey) {
-      recipientPubKey = recipientInfo.account.publicKey;
-      myData.contacts[toAddress].public = recipientPubKey;
-    }
-    if (recipientInfo.account.pqPublicKey) {
-      pqRecPubKey = recipientInfo.account.pqPublicKey;
-      myData.contacts[toAddress].pqPublic = pqRecPubKey;
-    }
-  }
-  let dhkey = '';
-  let sharedKeyMethod = 'none';
-  if (recipientPubKey) {
-    dhkey = ecSharedKey(keys.secret, recipientPubKey);
-    sharedKeyMethod = 'ec';
-    if (pqRecPubKey) {
-      // Generate shared secret using ECDH and take first 32 bytes
-      const { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey);
-      const combined = new Uint8Array(dhkey.length + sharedSecret.length);
-      combined.set(dhkey);
-      combined.set(sharedSecret, dhkey.length);
-      dhkey = deriveDhKey(combined);
-      pqEncSharedKey = bin2base64(cipherText);
-      sharedKeyMethod = 'pq';
-    }
-  }
 
-  let encMemo = '';
-  if (memo && sharedKeyMethod !== 'none') {
-    // We purposely do not encrypt/decrypt using browser native crypto functions; all crypto functions must be readable
-    // Encrypt message using shared secret
-    encMemo = encryptChacha(dhkey, memo);
-  }
-
-  // hidden input field retryOfTxId value is not an empty string
-  if (document.getElementById('retryOfPaymentTxId').value) {
-    // remove from myData use txid from hidden field retryOfPaymentTxId
-    removeFailedTx(document.getElementById('retryOfPaymentTxId').value, toAddress);
-
-    // clear the field
-    handleFailedPaymentClick.txid = '';
-    handleFailedPaymentClick.address = '';
-    handleFailedPaymentClick.memo = '';
-    document.getElementById('retryOfPaymentTxId').value = '';
-  }
-
-  // only include the sender info if the recipient is is a friend and has a pqKey
-  let encSenderInfo = '';
-  let senderInfo = '';
-  if (pqRecPubKey && myData.contacts[toAddress]?.friend === 3) {
-    // Create sender info object
-    senderInfo = {
-      username: myAccount.username,
-      name: myData.account.name,
-      email: myData.account.email,
-      phone: myData.account.phone,
-      linkedin: myData.account.linkedin,
-      x: myData.account.x,
-    };
-  } else if (recipientPubKey) {
-    senderInfo = {
-      username: myAccount.username,
-    };
-  } else {
-    senderInfo = { username: myAccount.address };
-  }
-  if (sharedKeyMethod !== 'none') {
-    encSenderInfo = encryptChacha(dhkey, stringify(senderInfo));
-  } else {
-    encSenderInfo = stringify(senderInfo);
-  }
-  // Create message payload
-  const payload = {
-    message: encMemo, // we need to call this field message, so we can use decryptMessage()
-    senderInfo: encSenderInfo,
-    encrypted: true,
-    encryptionMethod: 'xchacha20poly1305',
-    pqEncSharedKey: pqEncSharedKey,
-    sharedKeyMethod: sharedKeyMethod,
-    sent_timestamp: getCorrectedTimestamp(),
-  };
-
-  try {
-    console.log('payload is', payload);
-    // Send the transaction using postAssetTransfer
-    const response = await postAssetTransfer(toAddress, amount, payload, keys);
-
-    /* if (!response || !response.result || !response.result.success) {
-            alert('Transaction failed: ' + response.result.reason);
-            return;
-        } */
-
-    // Create contact if it doesn't exit
-    /* if (!myData.contacts[toAddress].messages) {
-      const username = document.getElementById('sendToAddress').value;
-      createNewContact(toAddress, username, 2);
-      // TODO can pass the username to createNewConact and get rid of the following line
-      // myData.contacts[toAddress].username = normalizeUsername(recipientInput);
-    } */
-
-    // Add transaction to history
-    const currentTime = getCorrectedTimestamp();
-
-    const newPayment = {
-      txid: response.txid,
-      amount: amount,
-      sign: -1,
-      timestamp: currentTime,
-      address: toAddress,
-      memo: memo,
-      status: 'sent',
-    };
-    insertSorted(wallet.history, newPayment, 'timestamp');
-
-    // Don't try to update the balance here; the tx might not have gone through; let user refresh the balance from the wallet page
-    // Maybe we can set a timer to check on the status of the tx using txid and update the balance if the txid was processed
-    /*
-        // Update local balance after successful transaction
-        fromAddress.balance -= amount;
-        walletData.balance = walletData.assets.reduce((total, asset) =>
-            total + asset.addresses.reduce((sum, addr) => sum + bigxnum2num(addr.balance, asset.price), 0), 0);
-        // Update wallet view and close modal
-        updateWalletView();
-*/
-
-    // --- Create and Insert Sent Transfer Message into contact.messages ---
-    const transferMessage = {
-      timestamp: currentTime,
-      sent_timestamp: currentTime,
-      my: true, // Sent transfer
-      message: memo, // Use the memo as the message content
-      amount: amount, // Use the BigInt amount
-      symbol: 'LIB', // TODO: Use the asset symbol
-      txid: response.txid,
-      status: 'sent',
-    };
-    // Insert the transfer message into the contact's message list, maintaining sort order
-    insertSorted(myData.contacts[toAddress].messages, transferMessage, 'timestamp');
-    // --------------------------------------------------------------
-
-    // --- Update myData.chats to reflect the new message ---
-    const existingChatIndex = myData.chats.findIndex((chat) => chat.address === toAddress);
-    if (existingChatIndex !== -1) {
-      myData.chats.splice(existingChatIndex, 1); // Remove existing entry
-    }
-    // Create the new chat entry
-    const chatUpdate = {
-      address: toAddress,
-      timestamp: currentTime,
-      txid: response.txid,
-    };
-    // Find insertion point to maintain timestamp order (newest first)
-    insertSorted(myData.chats, chatUpdate, 'timestamp');
-    // --- End Update myData.chats ---
-
-    // Update the chat modal to show the newly sent transfer message
-    // Check if the chat modal for this recipient is currently active
-    const inActiveChatWithRecipient =
-      chatModal.address === toAddress && chatModal.modal.classList.contains('active');
-
-    if (inActiveChatWithRecipient) {
-      chatModal.appendChatModal(); // Re-render the chat modal and highlight the new item
+    // If only one account exists, select it and trigger change event
+    if (usernames.length === 1) {
+      this.usernameSelect.value = usernames[0];
+      this.usernameSelect.dispatchEvent(new Event('change'));
+      return;
     }
 
-    sendAssetFormModal.close();
-    closeSendAssetConfirmModal();
-    document.getElementById('sendToAddress').value = '';
-    document.getElementById('sendAmount').value = '';
-    document.getElementById('sendMemo').value = '';
-    document.getElementById('sendToAddressError').style.display = 'none';
-    // Show history modal after successful transaction
-    openHistoryModal();
-    /*
-        const sendToAddressError = document.getElementById('sendToAddressError');
-        if (sendToAddressError) {
-            sendToAddressError.style.display = 'none';
-        }
-*/
-  } catch (error) {
-    console.error('Transaction error:', error);
-    alert('Transaction failed. Please try again.');
+    // Multiple accounts exist, show modal with select dropdown
+    this.submitButton.disabled = true; // Keep button disabled until an account is selected
+    this.submitButton.textContent = 'Sign In';
+    this.submitButton.style.display = 'inline';
+    this.removeButton.style.display = 'none';
+    this.notFoundMessage.style.display = 'none';
+
+    // set timeout to focus on the last item so shift+tab and tab prevention works
+    setTimeout(() => {
+      this.signInModalLastItem.focus();
+    }, 100);
+  }
+
+  close() {
+    // clear signInModal input fields
+    this.usernameSelect.value = '';
+    this.submitButton.disabled = true;
+    this.submitButton.textContent = 'Sign In';
+    this.submitButton.style.display = 'inline';
+    this.removeButton.style.display = 'none';
+    this.notFoundMessage.style.display = 'none';
+    
+    this.modal.classList.remove('active');
+    this.preselectedUsername = null;
+  }
+
+  async handleSignIn(event) {
+    if (event) {
+      event.preventDefault();
+    }
+
+    enterFullscreen();
+    
+    const username = this.usernameSelect.value;
+
+    // Get network ID from network.js
+    const { netid } = network;
+
+    // Get existing accounts
+    const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
+
+    // Check if username exists
+    if (!existingAccounts.netids[netid]?.usernames?.[username]) {
+      console.error('Account not found');
+      return;
+    }
+
+    // Check if the button text is 'Recreate'
+    if (this.submitButton.textContent === 'Recreate') {
+      const myData = parse(localStorage.getItem(`${username}_${netid}`));
+      const privateKey = myData.account.keys.secret;
+      createAccountModal.usernameInput.value = username;
+
+      createAccountModal.privateKeyInput.value = privateKey;
+      this.close();
+      createAccountModal.open();
+      // Dispatch a change event to trigger the availability check
+      createAccountModal.usernameInput.dispatchEvent(new Event('input'));
+      return;
+    }
+
+    myData = parse(localStorage.getItem(`${username}_${netid}`));
+    if (!myData) {
+      console.log('Account data not found');
+      return;
+    }
+    myAccount = myData.account;
+
+    /* requestNotificationPermission(); */
+    if (useLongPolling) {
+      setTimeout(longPoll(), 10);
+    }
+    // Start intervals now that user is signed in
+    if (!updateWebSocketIndicatorIntervalId && wsManager) {
+      updateWebSocketIndicatorIntervalId = setInterval(updateWebSocketIndicator, 5000);
+    }
+    if (!checkPendingTransactionsIntervalId) {
+      checkPendingTransactionsIntervalId = setInterval(checkPendingTransactions, 5000);
+    }
+    if (!getSystemNoticeIntervalId) {
+      getSystemNoticeIntervalId = setInterval(getSystemNotice, 15000);
+    }
+    // Close modal and proceed to app
+    this.close();
+    welcomeScreen.close();
+    await footer.switchView('chats'); // Default view
+  }
+
+  async handleUsernameChange() {
+    console.log('in handleUsernameChange');
+    // Get existing accounts
+    const { netid } = network;
+    const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
+    const netidAccounts = existingAccounts.netids[netid];
+    const usernames = netidAccounts?.usernames ? Object.keys(netidAccounts.usernames) : [];
+    // Enable submit button when an account is selected
+    const username = this.usernameSelect.value;
+    if (!username) {
+      this.submitButton.disabled = true;
+      this.notFoundMessage.style.display = 'none';
+      return;
+    }
+    //        const address = netidAccounts.usernames[username].keys.address;
+    const address = netidAccounts.usernames[username].address;
+    const availability = await checkUsernameAvailability(username, address);
+    //console.log('usernames.length', usernames.length);
+    //console.log('availability', availability);
+
+    // If this username was pre-selected and is available, auto-sign-in
+    if (this.preselectedUsername && username === this.preselectedUsername && availability === 'mine') {
+      this.handleSignIn();
+      this.preselectedUsername = null;
+      return;
+    }
+    if (usernames.length === 1 && availability === 'mine') {
+      this.handleSignIn();
+      return;
+    } else if (availability === 'mine') {
+      this.submitButton.disabled = false;
+      this.submitButton.textContent = 'Sign In';
+      this.submitButton.style.display = 'inline';
+      this.removeButton.style.display = 'none';
+      this.notFoundMessage.style.display = 'none';
+    } else if (availability === 'taken') {
+      this.submitButton.style.display = 'none';
+      this.removeButton.style.display = 'inline';
+      this.notFoundMessage.textContent = 'taken';
+      this.notFoundMessage.style.display = 'inline';
+    } else if (availability === 'available') {
+      this.submitButton.disabled = false;
+      this.submitButton.textContent = 'Recreate';
+      this.submitButton.style.display = 'inline';
+      this.removeButton.style.display = 'inline';
+      this.notFoundMessage.textContent = 'not found';
+      this.notFoundMessage.style.display = 'inline';
+    } else {
+      this.submitButton.disabled = true;
+      this.submitButton.textContent = 'Sign In';
+      this.submitButton.style.display = 'none';
+      this.removeButton.style.display = 'none';
+      this.notFoundMessage.textContent = 'network error';
+      this.notFoundMessage.style.display = 'inline';
+    }
+  }
+
+  async handleRemoveAccount() {
+    removeAccountModal.confirmSubmit();
   }
 }
-handleSendAsset.timestamp = getCorrectedTimestamp();
+
+// create a singleton instance of the SignInModal
+const signInModal = new SignInModal();
 
 // Contact Info Modal Management
-class ContactInfoModalManager {
+class ContactInfoModal {
   constructor() {
-    this.modal = document.getElementById('contactInfoModal');
     this.currentContactAddress = null;
     this.needsContactListUpdate = false; // track if we need to update the contact list
-    this.setupEventListeners();
   }
 
   // Initialize event listeners that only need to be set up once
-  setupEventListeners() {
+  load() {
+    this.modal = document.getElementById('contactInfoModal');
+    this.backButton = document.getElementById('closeContactInfoModal');
+    this.nameEditButton = document.getElementById('nameEditButton');
+    this.chatButton = document.getElementById('contactInfoChatButton');
+    this.sendButton = document.getElementById('contactInfoSendButton');
+    this.addFriendButton = document.getElementById('addFriendButtonContactInfo');
+    this.avatarSection = this.modal.querySelector('.contact-avatar-section');
+    this.avatarDiv = this.avatarSection.querySelector('.avatar');
+    this.nameDiv = this.avatarSection.querySelector('.name');
+    this.subtitleDiv = this.avatarSection.querySelector('.subtitle');
+    this.usernameDiv = document.getElementById('contactInfoUsername');
+
     // Back button
-    this.modal.querySelector('.back-button').addEventListener('click', () => {
-      this.close();
-    });
+    this.backButton.addEventListener('click', () => this.close());
 
-    document.getElementById('nameEditButton').addEventListener('click', openEditContactModal);
-
-    // Add close button handler for edit contact modal
-    document.getElementById('closeEditContactModal').addEventListener('click', () => {
-      document.getElementById('editContactModal').classList.remove('active');
-    });
+    this.nameEditButton.addEventListener('click', () => editContactModal.open());
 
     // Add chat button handler for contact info modal
-    document.getElementById('contactInfoChatButton').addEventListener('click', () => {
+    this.chatButton.addEventListener('click', () => {
       const addressToOpen = this.currentContactAddress;
       if (addressToOpen) {
         // Ensure we have an address before proceeding
@@ -2651,28 +2042,34 @@ class ContactInfoModalManager {
         chatModal.open(addressToOpen);
       }
     });
+
+    // Add send money button handler
+    this.sendButton.addEventListener('click', () => {
+      sendAssetFormModal.username = this.usernameDiv.textContent;
+      sendAssetFormModal.open();
+    });
+
+    // Add add friend button handler
+    this.addFriendButton.addEventListener('click', () => {
+      if (!this.currentContactAddress) return;
+      friendModal.open();
+    });
   }
 
   // Update contact info values
   async updateContactInfo(displayInfo) {
-    // Update avatar section
-    const avatarSection = this.modal.querySelector('.contact-avatar-section');
-    const avatarDiv = avatarSection.querySelector('.avatar');
-    const nameDiv = avatarSection.querySelector('.name');
-    const subtitleDiv = avatarSection.querySelector('.subtitle');
-
     // Generate identicon for the contact
     const identicon = await generateIdenticon(displayInfo.address, 96);
 
     // Update the avatar section
-    avatarDiv.innerHTML = identicon;
-    nameDiv.textContent =
-      displayInfo.name !== 'Not provided' ? displayInfo.name : displayInfo.username;
-    subtitleDiv.textContent = displayInfo.address;
+    this.avatarDiv.innerHTML = identicon;
+    this.nameDiv.textContent = displayInfo.name !== 'Not Entered' ? displayInfo.name : displayInfo.username;
+    this.subtitleDiv.textContent = displayInfo.address;
 
     const fields = {
       Username: 'contactInfoUsername',
       Name: 'contactInfoName',
+      ProvidedName: 'contactInfoProvidedName',
       Email: 'contactInfoEmail',
       Phone: 'contactInfoPhone',
       LinkedIn: 'contactInfoLinkedin',
@@ -2681,8 +2078,36 @@ class ContactInfoModalManager {
 
     Object.entries(fields).forEach(([field, elementId]) => {
       const element = document.getElementById(elementId);
-      if (element) {
-        const value = displayInfo[field.toLowerCase()] || 'Not provided';
+      if (!element) return;
+
+      const rawValue = displayInfo[field.toLowerCase()];
+      const value = (rawValue === null || rawValue === undefined || rawValue === '') ? 'Not provided' : rawValue;
+      const isEmpty = value === 'Not provided' || value === '';
+      
+      // Get the container to show/hide (contact-info-item div)
+      const container = field === 'Email' || field === 'LinkedIn' || field === 'X' 
+        ? element.parentElement.parentElement 
+        : element.parentElement;
+
+      if (isEmpty) {
+        // Hide the entire field container (including label)
+        container.style.display = 'none';
+        return;
+      }
+
+      // Show the container and set the value
+      container.style.display = 'block';
+      
+      if (field === 'Email') {
+        element.textContent = value;
+        element.href = `mailto:${value}`;
+      } else if (field === 'LinkedIn') {
+        element.textContent = value;
+        element.href = `https://linkedin.com/in/${value}`;
+      } else if (field === 'X') {
+        element.textContent = value;
+        element.href = `https://x.com/${value}`;
+      } else {
         element.textContent = value;
       }
     });
@@ -2690,11 +2115,10 @@ class ContactInfoModalManager {
 
   // Set up chat button functionality
   setupChatButton(displayInfo) {
-    const chatButton = document.getElementById('contactInfoChatButton');
     if (displayInfo.address) {
-      chatButton.style.display = 'block';
+      this.chatButton.style.display = 'block';
     } else {
-      chatButton.style.display = 'none';
+      this.chatButton.style.display = 'none';
     }
   }
 
@@ -2721,44 +2145,50 @@ class ContactInfoModalManager {
 
     // If we made changes that affect the contact list, update it
     if (this.needsContactListUpdate) {
-      updateContactsList();
+      contactsScreen.updateContactsList();
       this.needsContactListUpdate = false;
     }
   }
+
+  /**
+   * Check if the contact info modal is active
+   * @returns {boolean}
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
+  }
 }
 
+// Create a singleton instance
+const contactInfoModal = new ContactInfoModal();
+
+/**
+ * Friend Modal
+ * Frontend: 0 = blocked, 1 = Other, 2 = Acquaintance, 3 = Friend
+ * Backend: 1 = toll required, 0 = toll not required, 2 = blocked
+ * 
+ * @description Modal for setting the friend status for a contact
+ * @class FriendModal
+ */
 class FriendModal {
   constructor() {
-    this.modal = document.getElementById('friendModal');
-    this.friendForm = document.getElementById('friendForm');
     this.currentContactAddress = null;
     this.needsContactListUpdate = false; // track if we need to update the contact list
-    this.setupEventListeners();
   }
 
-  setupEventListeners() {
-    // Add friend button
-    document.getElementById('addFriendButtonContactInfo').addEventListener('click', () => {
-      if (!this.currentContactAddress) return;
-      this.openFriendModal();
-    });
-
-    document.getElementById('addFriendButtonChat').addEventListener('click', () => {
-      if (!this.currentContactAddress) return;
-      this.openFriendModal();
-    });
+  load() {
+    this.modal = document.getElementById('friendModal');
+    this.friendForm = document.getElementById('friendForm');
 
     // Friend modal form submission
     this.friendForm.addEventListener('submit', (event) => this.handleFriendSubmit(event));
 
     // Friend modal close button
-    this.modal
-      .querySelector('.back-button')
-      .addEventListener('click', () => this.closeFriendModal());
+    this.modal.querySelector('.back-button').addEventListener('click', () => this.closeFriendModal());
   }
 
   // Open the friend modal
-  openFriendModal() {
+  open() {
     const contact = myData.contacts[this.currentContactAddress];
     if (!contact) return;
 
@@ -2792,6 +2222,7 @@ class FriendModal {
       type: 'update_toll_required',
       timestamp: getCorrectedTimestamp(),
       friend: friend,
+      netid: network.netid,
     };
     const txid = await signObj(tx, myAccount.keys);
     const res = await injectTx(tx, txid);
@@ -2812,19 +2243,14 @@ class FriendModal {
     const contact = myData.contacts[this.currentContactAddress];
     if (!contact) return;
 
-    const selectedStatus = this.friendForm.querySelector(
-      'input[name="friendStatus"]:checked'
-    )?.value;
+    const selectedStatus = this.friendForm.querySelector('input[name="friendStatus"]:checked')?.value;
     if (!selectedStatus) return;
 
     // send transaction to update chat toll
-    const res = await this.postUpdateTollRequired(
-      this.currentContactAddress,
-      Number(selectedStatus)
-    );
-    if (res?.transaction?.success === false) {
+    const res = await this.postUpdateTollRequired(this.currentContactAddress, Number(selectedStatus));
+    if (res?.result?.success === false) {
       console.log(
-        `[handleFriendSubmit] update_toll_required transaction failed: ${res?.transaction?.reason}. Did not update contact status.`
+        `[handleFriendSubmit] update_toll_required transaction failed: ${res?.result?.reason}. Did not update contact status.`
       );
       return;
     }
@@ -2837,9 +2263,9 @@ class FriendModal {
       contact.friend === 0
         ? 'Blocked'
         : contact.friend === 1
-          ? 'Added as Other'
+          ? 'Added as Tolled'
           : contact.friend === 2
-            ? 'Added as Acquaintance'
+            ? 'Added as Connection'
             : contact.friend === 3
               ? 'Added as Friend'
               : 'Error updating friend status'
@@ -2854,6 +2280,9 @@ class FriendModal {
     // Update the friend button
     this.updateFriendButton(contact, 'addFriendButtonContactInfo');
     this.updateFriendButton(contact, 'addFriendButtonChat');
+
+    // Update the contact list
+    await contactsScreen.updateContactsList();
 
     // Close the friend modal
     this.closeFriendModal();
@@ -2877,361 +2306,340 @@ class FriendModal {
     // Add the current status class
     button.classList.add(`status-${contact.friend}`);
   }
+
+  // get the current contact address
+  getCurrentContactAddress() {
+    return this.currentContactAddress || false;
+  }
 }
 
 const friendModal = new FriendModal();
 
-async function openEditContactModal() {
-  const editContactModal = document.getElementById('editContactModal');
-
-  // Get the avatar section elements
-  const avatarSection = document.querySelector('#editContactModal .contact-avatar-section');
-  const avatarDiv = avatarSection.querySelector('.avatar');
-  const nameDiv = avatarSection.querySelector('.name');
-  const subtitleDiv = avatarSection.querySelector('.subtitle');
-  const identicon = document.getElementById('contactInfoAvatar').innerHTML;
-
-  // Update the avatar section
-  avatarDiv.innerHTML = identicon;
-  nameDiv.textContent = document.getElementById('contactInfoName').textContent;
-  subtitleDiv.textContent = document.getElementById('contactInfoUsername').textContent;
-
-  // Get the original name from the contact info display
-  const contactNameDisplay = document.getElementById('contactInfoName');
-  let originalName = contactNameDisplay.textContent;
-  if (originalName === 'Not provided') {
-    originalName = '';
+class EditContactModal {
+  constructor() {
+    this.currentContactAddress = null;
   }
 
-  // Store the original name
-  openEditContactModal.originalName = originalName;
+  load() {
+    this.modal = document.getElementById('editContactModal');
+    this.nameInput = document.getElementById('editContactNameInput');
+    this.nameActionButton = this.nameInput.parentElement.querySelector('.field-action-button');
+    this.providedNameContainer = document.getElementById('editContactProvidedNameContainer');
+    this.backButton = document.getElementById('closeEditContactModal');
 
-  // Set up the input field with the original name
-  const nameInput = document.getElementById('editContactNameInput');
-  nameInput.value = originalName;
-
-  // field-action-button should be clear
-  nameInput.parentElement.querySelector('.field-action-button').className =
-    'field-action-button clear';
-
-  // Show the edit contact modal
-  editContactModal.classList.add('active');
-
-  // Get the current contact info from the contact info modal
-  const currentContactAddress = contactInfoModal.currentContactAddress;
-  if (!currentContactAddress || !myData.contacts[currentContactAddress]) {
-    console.error('No current contact found');
-    return;
+    // Setup event listeners
+    this.nameInput.addEventListener('input', (e) => this.handleNameInput(e));
+    this.nameInput.addEventListener('blur', () => this.handleNameBlur());
+    this.nameInput.addEventListener('keydown', (e) => this.handleNameKeydown(e));
+    this.nameActionButton.addEventListener('click', () => this.handleNameButton());
+    this.providedNameContainer.addEventListener('click', () => this.handleProvidedNameClick());
+    this.backButton.addEventListener('click', () => this.close());
   }
 
-  // Create a handler function to focus the input after the modal transition
-  const editContactFocusHandler = () => {
-    nameInput.focus();
-    editContactModal.removeEventListener('transitionend', editContactFocusHandler);
-  };
+  open() {
+    // Get the avatar section elements
+    const avatarSection = document.querySelector('#editContactModal .contact-avatar-section');
+    const avatarDiv = avatarSection.querySelector('.avatar');
+    const nameDiv = avatarSection.querySelector('.name');
+    const subtitleDiv = avatarSection.querySelector('.subtitle');
+    const identicon = document.getElementById('contactInfoAvatar').innerHTML;
 
-  // Add the event listener
-  editContactModal.addEventListener('transitionend', editContactFocusHandler);
-}
+    // Update the avatar section
+    avatarDiv.innerHTML = identicon;
+    // update the name and subtitle
+    nameDiv.textContent = contactInfoModal.usernameDiv.textContent;
+    subtitleDiv.textContent = contactInfoModal.subtitleDiv.textContent;
 
-openEditContactModal.originalName = '';
+    // update the provided name
+    const providedNameDiv = this.providedNameContainer.querySelector('.contact-info-value');
 
-// Creates a handler for input changes
-function handleEditNameInput() {
-  const nameInput = document.getElementById('editContactNameInput');
-  const nameActionButton = nameInput.parentElement.querySelector('.field-action-button');
-  const originalNameValue = openEditContactModal.originalName;
-
-  const currentValue = nameInput.value.trim();
-  const valueChanged = currentValue !== originalNameValue;
-
-  if (valueChanged) {
-    nameActionButton.className = 'field-action-button add';
-    nameActionButton.setAttribute('aria-label', 'Save');
-  } else {
-    nameActionButton.className = 'field-action-button clear';
-    nameActionButton.setAttribute('aria-label', 'Clear');
-  }
-}
-
-// Creates a handler for action button clicks
-function handleEditNameButton() {
-  const nameInput = document.getElementById('editContactNameInput');
-  const nameActionButton = nameInput.parentElement.querySelector('.field-action-button');
-
-  if (nameActionButton.classList.contains('clear')) {
-    nameInput.value = '';
-    // Always show save button after clearing
-    nameActionButton.className = 'field-action-button add';
-    nameActionButton.setAttribute('aria-label', 'Save');
-    nameInput.focus();
-  } else {
-    handleSaveEditContact();
-  }
-}
-
-// Creates a handler for keydown events
-function handleEditNameKeydown(e) {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    handleSaveEditContact();
-  }
-}
-
-// Handles saving contact changes
-function handleSaveEditContact() {
-  const nameInput = document.getElementById('editContactNameInput');
-  const currentContactAddress = contactInfoModal.currentContactAddress;
-
-  // Save changes - if input is empty/spaces, it will become undefined
-  const newName = nameInput.value.trim() || null;
-  const contact = myData.contacts[currentContactAddress];
-  if (contact) {
-    contact.name = newName;
-    contactInfoModal.needsContactListUpdate = true;
-  }
-
-  // Safely close the edit modal
-  const editModal = document.getElementById('editContactModal');
-  if (editModal) {
-    editModal.classList.remove('active');
-  }
-
-  // Safely update the contact info modal if it exists and is open
-  if (contactInfoModal.currentContactAddress) {
-    const contactInfoModalElement = document.getElementById('contactInfoModal');
-    if (contactInfoModalElement && contactInfoModalElement.classList.contains('active')) {
-      contactInfoModal.updateContactInfo(createDisplayInfo(myData.contacts[currentContactAddress]));
-    }
-  }
-}
-
-// Create a singleton instance
-const contactInfoModal = new ContactInfoModalManager();
-
-function handleSignOut() {
-  // Clear intervals
-  if (updateWebSocketIndicatorIntervalId) {
-    clearInterval(updateWebSocketIndicatorIntervalId);
-    updateWebSocketIndicatorIntervalId = null;
-  }
-  if (checkPendingTransactionsIntervalId) {
-    clearInterval(checkPendingTransactionsIntervalId);
-    checkPendingTransactionsIntervalId = null;
-  }
-  // Stop camera if it's running
-  if (typeof startCamera !== 'undefined' && startCamera.scanInterval) {
-    stopCamera();
-  }
-
-  //    const shouldLeave = confirm('Do you want to leave this page?');
-  //    if (shouldLeave == false) { return }
-
-  // Clean up WebSocket connection
-  if (wsManager) {
-    wsManager.disconnect();
-    wsManager = null;
-  }
-
-  // Save myData to localStorage if it exists
-  saveState();
-  /*
-    if (myData && myAccount) {
-        localStorage.setItem(`${myAccount.username}_${myAccount.netid}`, stringify(myData));
-    }
-*/
-
-  // Close all modals
-  document.getElementById('menuModal').classList.remove('active');
-  document.getElementById('accountModal').classList.remove('active');
-
-  // Hide header and footer
-  document.getElementById('header').classList.remove('active');
-  document.getElementById('footer').classList.remove('active');
-  document.getElementById('newChatButton').classList.remove('visible');
-
-  // Reset header text
-  document.querySelector('.app-name').textContent = 'Liberdus';
-
-  // Hide all app screens
-  document.querySelectorAll('.app-screen').forEach((screen) => {
-    screen.classList.remove('active');
-  });
-
-  // Show welcome screen
-  document.getElementById('welcomeScreen').style.display = 'flex';
-
-  handleSignOut.exit = true;
-
-  // Add offline fallback
-  if (!navigator.onLine) {
-    // Just reset the UI state without clearing storage
-    document.getElementById('welcomeScreen').classList.add('active');
-    return;
-  }
-
-  // Only reload if online
-  window.location.reload();
-}
-handleSignOut.exit = false;
-
-function handleFailedPaymentClick(txid, element) {
-  console.log('handleFailedPaymentClick', txid);
-  const modal = document.getElementById('failedPaymentModal');
-
-  // Get the address and memo from the original failed transfer element
-  const address = element?.dataset?.address || chatModal.address;
-  const memo =
-    element?.querySelector('.transaction-memo')?.textContent ||
-    element?.querySelector('.payment-memo')?.textContent;
-  //const assetID = element?.dataset?.assetID || ''; // TODO: need to add assetID to `myData.wallet.history` for when we have multiple assets
-
-  // Store the address and memo in properties of handleFailedPaymentClick
-  handleFailedPaymentClick.address = address;
-  handleFailedPaymentClick.memo = memo;
-  handleFailedPaymentClick.txid = txid;
-  //handleFailedPaymentClick.assetID = assetID;
-
-  console.log(`handleFailedPaymentClick.address: ${handleFailedPaymentClick.address}`);
-  console.log(`handleFailedPaymentClick.memo: ${handleFailedPaymentClick.memo}`);
-  console.log(`handleFailedPaymentClick.txid: ${handleFailedPaymentClick.txid}`);
-  //console.log(`handleFailedPaymentClick.assetID: ${handleFailedPaymentClick.assetID}`)
-  if (modal) {
-    modal.classList.add('active');
-  }
-}
-handleFailedPaymentClick.txid = '';
-handleFailedPaymentClick.address = '';
-handleFailedPaymentClick.memo = '';
-//handleFailedPaymentClick.assetID = '';
-
-/**
- * Invoked when the user clicks the retry button in the failed payment modal
- * It will fill the sendAssetFormModal with the payment content and txid of the failed payment in a hidden input field in the sendAssetFormModal
- */
-function handleFailedPaymentRetry() {
-  const retryOfPaymentTxId = sendAssetFormModal.retryTxIdInput;
-
-  // close the failed payment modal
-  const failedPaymentModal = document.getElementById('failedPaymentModal');
-  if (failedPaymentModal) {
-    failedPaymentModal.classList.remove('active');
-  }
-
-  if (sendAssetFormModal.modal && retryOfPaymentTxId) {
-    sendAssetFormModal.open();
-
-    // 1. fill in hidden retryOfPaymentTxId input
-    retryOfPaymentTxId.value = handleFailedPaymentClick.txid;
-
-    // 2. fill in the memo input
-    sendAssetFormModal.querySelector('#sendMemo').value = handleFailedPaymentClick.memo;
-
-    // 3. fill in the to address input
-    // find username in myData.contacts[handleFailedPaymentClick.address].senderInfo.username
-    // enter as an input to invoke the oninput event
-    sendAssetFormModal.usernameInput.value =
-      myData.contacts[handleFailedPaymentClick.address]?.senderInfo?.username ||
-      handleFailedPaymentClick.address ||
-      '';
-    sendAssetFormModal.usernameInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-    // 4. fill in the amount input
-    // get the amount from myData.wallet.history since we need to the bigint value
-    const amount = myData.wallet.history.find(
-      (tx) => tx.txid === handleFailedPaymentClick.txid
-    )?.amount;
-    // convert bigint to string
-    const amountStr = big2str(amount, 18);
-    sendAssetFormModal.amountInput.value = amountStr;
-  }
-}
-
-function handleFailedPaymentDelete() {
-  const failedPaymentModal = document.getElementById('failedPaymentModal');
-  const originalTxid = handleFailedPaymentClick.txid;
-
-  if (typeof originalTxid === 'string' && originalTxid) {
-    const currentAddress = handleFailedPaymentClick.address;
-    removeFailedTx(originalTxid, currentAddress);
-
-    if (failedPaymentModal) {
-      failedPaymentModal.classList.remove('active');
+    // if the textContent is 'Not provided', set it to an empty string
+    const providedName = document.getElementById('contactInfoProvidedName').textContent;
+    if (providedName === 'Not provided') {
+      this.providedNameContainer.style.display = 'none';
+    } else {
+      providedNameDiv.textContent = providedName;
+      this.providedNameContainer.style.display = 'block';
     }
 
-    // refresh current view
-    chatModal.refreshCurrentView(handleFailedPaymentClick.txid);
+    // Get the original name from the contact info display
+    const contactNameDisplay = document.getElementById('contactInfoName');
+    let originalName = contactNameDisplay.textContent;
+    if (originalName === 'Not Entered') {
+      originalName = '';
+    }
 
-    // Clear the stored values
-    handleFailedPaymentClick.txid = '';
-    handleFailedPaymentClick.address = '';
-    handleFailedPaymentClick.memo = '';
-    //handleFailedPaymentClick.assetID = '';
-  } else {
-    console.error('Error deleting message: TXID not found.');
-    if (failedPaymentModal) {
-      failedPaymentModal.classList.remove('active');
+    // Set up the input field with the original name
+    this.nameInput.value = originalName;
+
+    // field-action-button should be clear
+    this.nameActionButton.className = 'field-action-button clear';
+
+    // Get the current contact info from the contact info modal
+    this.currentContactAddress = contactInfoModal.currentContactAddress;
+    if (!this.currentContactAddress || !myData.contacts[this.currentContactAddress]) {
+      console.error('No current contact found');
+      return;
+    }
+
+    // Show the edit contact modal
+    this.modal.classList.add('active');
+
+    // Create a handler function to focus the input after the modal transition
+    const editContactFocusHandler = () => {
+      // add slight delay and focus on the the very right of the input
+      setTimeout(() => {
+        this.nameInput.focus();
+        // Set cursor position to the end of the input content
+        this.nameInput.setSelectionRange(this.nameInput.value.length, this.nameInput.value.length);
+      }, 200);
+      this.modal.removeEventListener('transitionend', editContactFocusHandler);
+    };
+
+    // Add the event listener
+    this.modal.addEventListener('transitionend', editContactFocusHandler);
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+    this.currentContactAddress = null;
+  }
+
+  handleProvidedNameClick() {
+    const providedNameValue = this.providedNameContainer.querySelector('.contact-info-value').textContent;
+    
+    // Fill the input with the provided name
+    this.nameInput.value = providedNameValue;
+    
+    // Focus on the input and set cursor to end
+    this.nameInput.focus();
+    this.nameInput.setSelectionRange(this.nameInput.value.length, this.nameInput.value.length);
+
+    // Invoke input event
+    this.nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  handleNameInput() {
+    // normalize the input using normalizeName
+    const normalizedName = normalizeName(this.nameInput.value);
+    this.nameInput.value = normalizedName;
+
+    // if already 'add' class, return early
+    if (this.nameActionButton.classList.contains('add')) {
+      return;
+    }
+
+    this.nameActionButton.className = 'field-action-button add';
+    this.nameActionButton.setAttribute('aria-label', 'Save');
+  }
+
+  handleNameBlur() {
+    // normalize the input using normalizeName
+    const normalizedName = normalizeName(this.nameInput.value, true);
+    this.nameInput.value = normalizedName;
+  }
+
+  handleNameButton() {
+    if (this.nameActionButton.classList.contains('clear')) {
+      this.nameInput.value = '';
+      // Always show save button after clearing
+      this.nameActionButton.className = 'field-action-button add';
+      this.nameActionButton.setAttribute('aria-label', 'Save');
+      this.nameInput.focus();
+    } else {
+      this.handleSave();
     }
   }
-}
 
-function closeFailedPaymentModalAndClearState() {
-  const failedPaymentModal = document.getElementById('failedPaymentModal');
-  if (failedPaymentModal) {
-    failedPaymentModal.classList.remove('active');
-  }
-  // Clear the stored values when modal is closed
-  handleFailedPaymentClick.txid = '';
-  handleFailedPaymentClick.address = '';
-  handleFailedPaymentClick.memo = '';
-  //handleFailedPaymentClick.assetID = '';
-}
-
-function handleFailedPaymentBackdropClick(event) {
-  const failedPaymentModal = document.getElementById('failedPaymentModal');
-  if (event.target === failedPaymentModal) {
-    closeFailedPaymentModalAndClearState();
-  }
-}
-
-// Update wallet view; refresh wallet
-async function updateWalletView() {
-  const walletData = myData.wallet;
-
-  await updateWalletBalances();
-
-  // Update total networth
-  document.getElementById('walletTotalBalance').textContent = (walletData.networth || 0).toFixed(2);
-
-  // Update assets list
-  const assetsList = document.getElementById('assetsList');
-
-  if (!Array.isArray(walletData.assets) || walletData.assets.length === 0) {
-    assetsList.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 2rem; margin-bottom: 1rem"></div>
-                <div style="font-weight: bold; margin-bottom: 0.5rem">No Assets Yet</div>
-                <div>Your assets will appear here</div>
-            </div>`;
-    return;
+  handleNameKeydown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this.handleSave();
+    }
   }
 
-  assetsList.innerHTML = walletData.assets
-    .map((asset) => {
-      console.log('asset balance', asset, asset.balance);
-      return `
-            <div class="asset-item">
-                <div class="asset-logo"><img src="./media/liberdus_logo_50.png" class="asset-logo"></div>
-                <div class="asset-info">
-                    <div class="asset-name">${asset.name}</div>
-                    <div class="asset-symbol">$${asset.price} / ${asset.symbol}</div>
-                </div>
-                <div class="asset-balance">${(Number(asset.balance) / Number(wei)).toFixed(6)}<br><span class="asset-symbol">$${asset.networth.toFixed(6)}</span></div>
+  handleSave() {
+    // Save changes - if input is empty/spaces, it will become undefined
+    const newName = this.nameInput.value.trim() || null;
+    const contact = myData.contacts[this.currentContactAddress];
+    if (contact) {
+      contact.name = newName;
+      contactInfoModal.needsContactListUpdate = true;
+    }
+
+    // update title if chatModal is open and if contact.name is '' fallback to contact.username
+    if (chatModal.isActive() && chatModal.address === this.currentContactAddress) {
+      chatModal.modalTitle.textContent = getContactDisplayName(contact);
+    }
+
+    // Safely update the contact info modal if it exists and is open
+    if (contactInfoModal.currentContactAddress) {
+      if (contactInfoModal.isActive()) {
+        contactInfoModal.updateContactInfo(createDisplayInfo(myData.contacts[this.currentContactAddress]));
+      }
+    }
+
+    // Safely close the edit modal
+    this.close();
+  }
+}
+
+// make singleton instance
+const editContactModal = new EditContactModal();
+
+class HistoryModal {
+  constructor() {
+    // No DOM dependencies in constructor
+  }
+
+  load() {
+    // DOM elements - only accessed when DOM is ready
+    this.modal = document.getElementById('historyModal');
+    this.assetSelect = document.getElementById('historyAsset');
+    this.transactionList = document.getElementById('transactionList');
+    this.closeButton = document.getElementById('closeHistoryModal');
+
+    // Cache the form container for scrollToTop
+    this.formContainer = this.modal.querySelector('.form-container');
+
+    // Setup event listeners
+    this.closeButton.addEventListener('click', () => this.close());
+    this.assetSelect.addEventListener('change', () => this.handleAssetChange());
+    this.transactionList.addEventListener('click', (event) => this.handleItemClick(event));
+  }
+
+  open() {
+    this.modal.classList.add('active');
+    this.populateAssets();
+    this.updateTransactionHistory();
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+    walletScreen.openHistoryModalButton.classList.remove('has-notification');
+    footer.walletButton.classList.remove('has-notification');
+  }
+
+  populateAssets() {
+    const walletData = myData.wallet;
+    
+    if (!walletData.assets || walletData.assets.length === 0) {
+      this.assetSelect.innerHTML = '<option value="">No assets available</option>';
+      return;
+    }
+    
+    this.assetSelect.innerHTML = walletData.assets
+      .map((asset, index) => `<option value="${index}">${asset.name} (${asset.symbol})</option>`)
+      .join('');
+  }
+
+  async updateTransactionHistory() {
+    const walletData = myData.wallet;
+    const assetIndex = this.assetSelect.value;
+    
+    if (!walletData.history || walletData.history.length === 0) {
+      this.showEmptyState();
+      return;
+    }
+    
+    const asset = walletData.assets[assetIndex];
+    const contacts = myData.contacts;
+    
+    this.transactionList.innerHTML = walletData.history
+      .map((tx) => {
+        const txidAttr = tx?.txid ? `data-txid="${tx.txid}"` : '';
+        const statusAttr = tx?.status ? `data-status="${tx.status}"` : '';
+        const contactName = getContactDisplayName(contacts[tx.address]);
+        
+        return `
+          <div class="transaction-item" data-address="${tx.address}" ${txidAttr} ${statusAttr}>
+            <div class="transaction-info">
+              <div class="transaction-type ${tx.sign === -1 ? 'send' : 'receive'}">
+                ${tx.sign === -1 ? '↑ Sent' : '↓ Received'}
+              </div>
+              <div class="transaction-amount">
+                ${tx.sign === -1 ? '-' : '+'} ${(Number(tx.amount) / Number(wei)).toFixed(6)} ${asset.symbol}
+              </div>
             </div>
+            <div class="transaction-details">
+              <div class="transaction-address">
+                ${tx.sign === -1 ? 'To:' : 'From:'} ${tx.nominee || contactName}
+              </div>
+              <div class="transaction-time">${formatTime(tx.timestamp)}</div>
+            </div>
+            ${tx.memo ? `<div class="transaction-memo">${linkifyUrls(tx.memo)}</div>` : ''}
+          </div>
         `;
-    })
-    .join('');
+      })
+      .join('');
+    
+    // Scroll the form container to top after rendering
+    requestAnimationFrame(() => (this.formContainer.scrollTop = 0));
+  }
+
+  showEmptyState() {
+    this.transactionList.innerHTML = `
+      <div class="empty-state">
+        <div style="font-size: 2rem; margin-bottom: 1rem"></div>
+        <div style="font-weight: bold; margin-bottom: 0.5rem">No Transactions</div>
+        <div>Your transaction history will appear here</div>
+      </div>`;
+  }
+
+  async handleAssetChange() {
+    await this.updateTransactionHistory();
+  }
+
+  handleItemClick(event) {
+    const item = event.target.closest('.transaction-item');
+    
+    if (!item) return;
+    
+    if (item.dataset.status === 'failed') {
+      console.log(`Not opening chatModal for failed transaction`);
+      
+      if (event.target.closest('.transaction-item')) {
+        failedTransactionModal.open(item.dataset.txid, item);
+      }
+      return;
+    }
+    
+    const memo = item.querySelector('.transaction-memo')?.textContent;
+    if (memo === 'stake' || memo === 'unstake') {
+      validatorStakingModal.open();
+      return;
+    }
+    
+    const address = item.dataset.address;
+    if (address && myData.contacts[address]) {
+      // Close contact info modal if open
+      if (contactInfoModal.isActive()) {
+        contactInfoModal.close();
+      }
+      
+      this.close();
+      chatModal.open(address);
+    }
+  }
+
+  // Public method for external updates
+  async refresh() {
+    if (this.isActive()) {
+      await this.updateTransactionHistory();
+    }
+  }
+
+  /**
+   * Check if the history modal is active
+   * @returns {boolean}
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
+  }
 }
+
+// Create singleton instance
+const historyModal = new HistoryModal();
 
 async function updateAssetPricesIfNeeded() {
   if (!myData || !myData.wallet || !myData.wallet.assets) {
@@ -3273,151 +2681,6 @@ async function updateAssetPricesIfNeeded() {
   }
 }
 
-function openHistoryModal() {
-  const modal = document.getElementById('historyModal');
-  modal.classList.add('active');
-
-  // Get wallet data
-  const walletData = myData.wallet;
-
-  const assetSelect = document.getElementById('historyAsset');
-
-  // Check if we have any assets
-  if (!walletData.assets || walletData.assets.length === 0) {
-    assetSelect.innerHTML = '<option value="">No assets available</option>';
-    return;
-  }
-  // Populate assets dropdown
-  assetSelect.innerHTML = walletData.assets
-    .map((asset, index) => `<option value="${index}">${asset.name} (${asset.symbol})</option>`)
-    .join('');
-
-  // Update addresses for first asset
-  updateHistoryAddresses();
-}
-
-function closeHistoryModal() {
-  document.getElementById('historyModal').classList.remove('active');
-  document.getElementById('openHistoryModal').classList.remove('has-notification');
-  document.getElementById('switchToWallet').classList.remove('has-notification');
-}
-
-function updateHistoryAddresses() {
-  // TODO get rid of this function after changing all refrences
-  // Update transaction history
-  updateTransactionHistory();
-}
-
-async function updateTransactionHistory() {
-  await updateChatList();
-
-  const walletData = myData.wallet;
-
-  const assetIndex = document.getElementById('historyAsset').value;
-  const transactionList = document.getElementById('transactionList');
-
-  // Check if we have any assets
-  if (!walletData.assets || walletData.assets.length === 0) {
-    transactionList.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 2rem; margin-bottom: 1rem"></div>
-                <div style="font-weight: bold; margin-bottom: 0.5rem">No Transactions</div>
-                <div>Your transaction history will appear here</div>
-            </div>`;
-    return;
-  }
-
-  const asset = walletData.assets[assetIndex];
-  const contacts = myData.contacts;
-
-  transactionList.innerHTML = walletData.history
-    .map((tx) => {
-      const txidAttr = tx?.txid ? `data-txid="${tx.txid}"` : '';
-      const statusAttr = tx?.status ? `data-status="${tx.status}"` : '';
-      return `
-        <div class="transaction-item" data-address="${tx.address}" ${txidAttr} ${statusAttr}>
-            <div class="transaction-info">
-                <div class="transaction-type ${tx.sign === -1 ? 'send' : 'receive'}">
-                    ${tx.sign === -1 ? '↑ Sent' : '↓ Received'}
-                </div>
-                <div class="transaction-amount">
-                    ${tx.sign === -1 ? '-' : '+'} ${(Number(tx.amount) / Number(wei)).toFixed(6)} ${asset.symbol}
-                </div>
-            </div>
-            <div class="transaction-details">
-                <div class="transaction-address">
-                    ${tx.sign === -1 ? 'To:' : 'From:'} ${tx.nominee || contacts[tx.address]?.name || contacts[tx.address]?.senderInfo?.name || contacts[tx.address]?.username || `${contacts[tx.address]?.address.slice(0, 8)}...${contacts[tx.address]?.address.slice(-6)}`}
-                </div>
-                <div class="transaction-time">${formatTime(tx.timestamp)}</div>
-            </div>
-            ${tx.memo ? `<div class="transaction-memo">${linkifyUrls(tx.memo)}</div>` : ''}
-        </div>
-    `;
-    })
-    .join('');
-
-  // Scroll the form container to top after rendering
-  requestAnimationFrame(() => {
-    const modal = document.getElementById('historyModal');
-    const formContainer = modal?.querySelector('.form-container'); // Find the form container within the modal
-    if (formContainer) {
-      formContainer.scrollTop = 0;
-    }
-  });
-}
-
-// Handle clicks on transaction history items
-function handleHistoryItemClick(event) {
-  // Find the closest ancestor element with the class 'transaction-item'
-  const item = event.target.closest('.transaction-item');
-
-  if (item.dataset.status === 'failed') {
-    console.log(`Not opening chatModal for failed transaction`);
-
-    // if not data-address then we can assume it's a stake or unstake transaction so when clicking on it it should lead to the validator modal
-    // TODO: remove this maybe since it should be removed from history receipt when we know it has failed when checking receipt right?
-    /* if (!item.dataset.address) {
-            openValidatorModal();
-            return;
-        } */
-
-    if (event.target.closest('.transaction-item')) {
-      handleFailedPaymentClick(item.dataset.txid, item);
-    }
-
-    return;
-  }
-
-  // if not data-address then we can assume it's a stake or unstake transaction so when clicking on it it should lead to the validator modal
-  /* if (!item.dataset.address) {
-        openValidatorModal();
-        return;
-    } */
-
-  if (item) {
-    // Check if this is a stake/unstake transaction by looking at the memo
-    const memo = item.querySelector('.transaction-memo')?.textContent;
-    if (memo === 'stake' || memo === 'unstake') {
-      validatorStakingModal.open();
-      return;
-    }
-
-    // Get the address from the data-address attribute
-    const address = item.dataset.address;
-    if (address && myData.contacts[address]) {
-      // close contactInfoModal if it is open
-      if (document.getElementById('contactInfoModal').classList.contains('active')) {
-        document.getElementById('contactInfoModal').classList.remove('active');
-      }
-
-      // Close the history modal
-      closeHistoryModal();
-      // Open the chat modal for the corresponding address
-      chatModal.open(address);
-    }
-  }
-}
-
 async function queryNetwork(url) {
   //console.log('queryNetwork', url)
   if (!(await checkOnlineStatus())) {
@@ -3426,20 +2689,15 @@ async function queryNetwork(url) {
     //alert('not online')
     return null;
   }
-  const randomGateway = getGatewayForRequest();
-  if (!randomGateway) {
+  const selectedGateway = getGatewayForRequest();
+  if (!selectedGateway) {
     console.error('No gateway available for network query');
     return null;
   }
 
   try {
-    const response = await fetch(
-      `${randomGateway.protocol}://${randomGateway.host}:${randomGateway.port}${url}`
-    );
-    console.log(
-      'query',
-      `${randomGateway.protocol}://${randomGateway.host}:${randomGateway.port}${url}`
-    );
+    const response = await fetch(`${selectedGateway.web}${url}`);
+    console.log('query', `${selectedGateway.web}${url}`);
     const data = parse(await response.text());
     console.log('response', data);
     return data;
@@ -3468,13 +2726,13 @@ async function pollChats() {
     }
 
     try {
-      const gotChats = await updateChatData();
+      const gotChats = await chatsScreen.updateChatData();
       if (gotChats > 0) {
-        await updateChatList();
+        await chatsScreen.updateChatList();
       }
 
-      if (document.getElementById('walletScreen')?.classList.contains('active')) {
-        await updateWalletView();
+      if (walletScreen.isActive()) {
+        await walletScreen.updateWalletView();
       }
     } catch (error) {
       console.error('Chat polling error:', error);
@@ -3502,27 +2760,30 @@ async function pollChats() {
 // Helper function to check WebSocket status and log diagnostics if needed
 async function checkWebSocketStatus() {
   if (!wsManager) return 'not initialized';
-
   const status = wsManager.isConnected() ? 'connected' : 'disconnected';
-
+  const selectedGateway = getGatewayForRequest();
   // Log diagnostic info if disconnected
   if (status === 'disconnected' && wsManager.connectionState === 'disconnected') {
     const diagnosticInfo = {
       browserState: {
         isPrivateMode: !window.localStorage,
-        networkProtocol:
-          window.location.protocol === 'https:' ? 'Secure (HTTPS)' : 'Insecure (HTTP)',
+        networkProtocol: window.location.protocol === 'https:' ? 'Secure (HTTPS)' : 'Insecure (HTTP)',
         isOnline: navigator.onLine,
         webSocketSupport: typeof WebSocket !== 'undefined',
       },
       websocketConfig: {
-        urlValid: network?.websocket?.url
-          ? network.websocket.url.startsWith('ws://') || network.websocket.url.startsWith('wss://')
-          : false,
-        url: network?.websocket?.url || 'Not configured',
+        urlValid: (() => {
+          return selectedGateway?.ws
+            ? selectedGateway.ws.startsWith('ws://') || selectedGateway.ws.startsWith('wss://')
+            : false;
+        })(),
+        url: (() => {
+          const selectedGateway = getGatewayForRequest();
+          return selectedGateway?.ws || 'Not configured';
+        })(),
       },
     };
-    console.log('WebSocket Diagnostic Information:', diagnosticInfo);
+    console.warn('WebSocket Diagnostic Information:', diagnosticInfo);
   }
 
   return status;
@@ -3587,16 +2848,7 @@ async function getChats(keys, retry = 1) {
     // TODO check if above is working
     await processChats(senders.chats, keys);
   } else {
-    if (retry > 0) {
-      const getChatsRetryLimit = 3;
-      if (retry <= getChatsRetryLimit) {
-        await new Promise((resolve) => setTimeout(resolve, 1000 * retry));
-        // call getChats recursively
-        chatCount = await getChats(keys, retry + 1);
-      } else {
-        console.error('Failed to get chats after', getChatsRetryLimit, 'retries');
-      }
-    }
+    console.error('getChats: no senders found')
   }
   if (chatModal.address) {
     // clear the unread count of address for open chat modal
@@ -3652,8 +2904,7 @@ async function processChats(chats, keys) {
       // This check determines if we're currently chatting with the sender
       // We ONLY want to avoid notifications if we're actively viewing this exact chat
       const inActiveChatWithSender =
-        chatModal.address === from &&
-        document.getElementById('chatModal')?.classList.contains('active'); // Added null check for safety
+        chatModal.address === from && chatModal.isActive();
 
       for (let i in res.messages) {
         const tx = res.messages[i]; // the messages are actually the whole tx
@@ -3685,11 +2936,26 @@ async function processChats(chats, keys) {
           //console.log("payload", payload)
           decryptMessage(payload, keys); // modifies the payload object
           if (payload.senderInfo) {
-            contact.senderInfo = JSON.parse(JSON.stringify(payload.senderInfo)); // make a copy
+            contact.senderInfo = cleanSenderInfo(payload.senderInfo)
             delete payload.senderInfo;
             if (!contact.username && contact.senderInfo.username) {
-              // TODO check the network to see if the username given with the message maps to the address of this contact
-              contact.username = contact.senderInfo.username;
+              // check if the username given with the message maps to the address of this contact
+              const usernameAddress = await getUsernameAddress(contact.senderInfo.username);
+                if (usernameAddress && normalizeAddress(usernameAddress) === normalizeAddress(tx.from)) {
+                  contact.username = contact.senderInfo.username;
+                } else {
+                  // username doesn't match address so skipping this message
+                  console.error(`Username: ${contact.senderInfo.username} does not match address ${tx.from}`);
+                  continue;
+                }
+            } else {
+              if(contact.username) {
+                // if we already have the username, we can use it
+                contact.senderInfo.username = contact.username;
+              } else {
+                console.error(`Username not provided in senderInfo.`)
+                continue
+              }
             }
           }
           //  skip if this tx was processed before and is already in contact.messages;
@@ -3714,9 +2980,11 @@ async function processChats(chats, keys) {
           //console.log('contact.message', contact.messages)
           payload.my = false;
           payload.timestamp = payload.sent_timestamp;
+          payload.txid = getTxid(tx);
+          delete payload.pqEncSharedKey; 
           insertSorted(contact.messages, payload, 'timestamp');
-          // if we are not in the chatModal of who sent it, playChatSound
-          if (!inActiveChatWithSender) {
+          // if we are not in the chatModal of who sent it, playChatSound or if device visibility is hidden play sound
+          if (!inActiveChatWithSender || document.visibilityState === 'hidden') {
             playChatSound(true);
           }
           added += 1;
@@ -3745,19 +3013,38 @@ async function processChats(chats, keys) {
           }
           //console.log("payload", payload)
           decryptMessage(payload, keys); // modifies the payload object
+          delete payload.pqEncSharedKey;
           if (payload.senderInfo) {
-            contact.senderInfo = JSON.parse(JSON.stringify(payload.senderInfo)); // make a copy
+            contact.senderInfo = cleanSenderInfo(payload.senderInfo);
             delete payload.senderInfo;
             if (!contact.username && contact.senderInfo.username) {
-              // TODO check the network to see if the username given with the message maps to the address of this contact
-              contact.username = contact.senderInfo.username;
+              // check if the username given with the message maps to the address of this contact
+              const usernameAddress = await getUsernameAddress(contact.senderInfo.username);
+                if (usernameAddress && normalizeAddress(usernameAddress) === normalizeAddress(tx.from)) {
+                  contact.username = contact.senderInfo.username;
+                } else {
+                  // username doesn't match address so skipping this message
+                  console.error(`Username: ${contact.senderInfo.username} does not match address ${tx.from}`);
+                  continue;
+                }
+            } else {
+              if(contact.username) {
+                // if we already have the username, we can use it
+                contact.senderInfo.username = contact.username;
+              } else {
+                console.error(`Username not provided in senderInfo.`)
+                continue
+              }
             }
           }
           // compute the transaction id (txid)
+          /*
           delete tx.sign;
           const jstr = stringify(tx);
           const jstrBytes = utf82bin(jstr);
           const txidHex = hashBytes(jstrBytes);
+          */
+          const txidHex = getTxid(tx);
 
           // skip if this tx was processed before and is already in the history array;
           //    txs are the same if the history[x].txid is the same as txidHex
@@ -3798,6 +3085,7 @@ async function processChats(chats, keys) {
             message: payload.message, // Use the memo as the message content
             amount: parse(stringify(tx.amount)), // Ensure amount is stored as BigInt
             symbol: 'LIB', // TODO: get the symbol from the asset
+            txid: txidHex,
           };
           // Insert the transfer message into the contact's message list, maintaining sort order
           insertSorted(contact.messages, transferMessage, 'timestamp');
@@ -3805,24 +3093,17 @@ async function processChats(chats, keys) {
 
           added += 1;
 
-          const walletScreenActive = document
-            .getElementById('walletScreen')
-            ?.classList.contains('active');
-          const historyModalActive = document
-            .getElementById('historyModal')
-            ?.classList.contains('active');
           // Update wallet view if it's active
-          if (walletScreenActive) {
-            updateWalletView();
+          if (walletScreen.isActive()) {
+            walletScreen.updateWalletView();
           }
           // update history modal if it's active
-          if (historyModalActive) {
-            updateTransactionHistory();
-          }
+          historyModal.refresh();
+
           // Always play transfer sound for new transfers
           playTransferSound(true);
           // is chatModal of sender address is active
-          if (inActiveChatWithSender) {
+          if (inActiveChatWithSender && document.visibilityState === 'visible') {
             // add the transfer tx to the chatModal
             chatModal.appendChatModal(true);
           }
@@ -3845,7 +3126,9 @@ async function processChats(chats, keys) {
         } else {
           // If chat modal is active, explicitly call appendChatModal to update it
           // and trigger highlight/scroll for the new message.
-          chatModal.appendChatModal(true); // Pass true for highlightNewMessage flag
+          if (document.visibilityState === 'visible') {
+            chatModal.appendChatModal(true); // Pass true for highlightNewMessage flag
+          }
         }
 
         // Remove existing chat for this contact if it exists
@@ -3867,10 +3150,8 @@ async function processChats(chats, keys) {
 
         // Only suppress notification if we're ACTIVELY viewing this chat and if not a transfer
         if (!inActiveChatWithSender && !hasNewTransfer) {
-          // Add notification indicator to Chats tab if we're not on it
-          const chatsButton = document.getElementById('switchToChats');
-          if (!document.getElementById('chatsScreen').classList.contains('active')) {
-            chatsButton.classList.add('has-notification');
+          if (!chatsScreen.isActive()) {
+            footer.chatButton.classList.add('has-notification');
           }
         }
       }
@@ -3878,13 +3159,11 @@ async function processChats(chats, keys) {
       // Show transfer notification even if no messages were added
       if (hasNewTransfer) {
         // Add notification indicator to Wallet tab if we're not on it
-        const walletButton = document.getElementById('switchToWallet');
-        if (!document.getElementById('walletScreen').classList.contains('active')) {
-          walletButton.classList.add('has-notification');
+        if (!walletScreen.isActive()) {
+          footer.walletButton.classList.add('has-notification');
         }
         // Add notification to openHistoryModal wallet-action-button
-        const historyButton = document.getElementById('openHistoryModal');
-        historyButton.classList.add('has-notification');
+        walletScreen.openHistoryModalButton.classList.add('has-notification');
       }
     }
   }
@@ -3896,6 +3175,36 @@ async function processChats(chats, keys) {
     console.log('Updated global chat timestamp to', newTimestamp);
   }
 }
+
+/**
+ * Get the address of a username and return the address if it exists
+ * @param {string} username - The username to check
+ * @returns {Promise<string|null>} The address of the username or null if it doesn't exist
+ */
+async function getUsernameAddress(username) {
+  const usernameBytes = utf82bin(normalizeUsername(username));
+  const usernameHash = hashBytes(usernameBytes);
+  const selectedGateway = getGatewayForRequest();
+  if (!selectedGateway) {
+    console.error('No gateway available for username check');
+    return null;
+  }
+  try {
+    const response = await fetch(
+      `${selectedGateway.web}/address/${usernameHash}`
+    );
+    const data = await response.json();
+    // if address is not present, return null
+    if (!data || !data.address) {
+      return null;
+    }
+    return data.address;
+  } catch (error) {
+    console.log('Error checking username:', error);
+    return null;
+  }
+}
+
 
 `
 The main difference between a chat message and an asset transfer is
@@ -3952,6 +3261,7 @@ async function postAssetTransfer(to, amount, memo, keys) {
     timestamp: getCorrectedTimestamp(),
     network: NETWORK_ACCOUNT_ID,
     fee: parameters.current.transactionFee || 1n * wei, // This is not used by the backend
+    netid: network.netid,
   };
 
   const txid = await signObj(tx, keys);
@@ -3973,6 +3283,7 @@ async function postRegisterAlias(alias, keys) {
     publicKey: keys.public,
     pqPublicKey: pqPublicKey,
     timestamp: getCorrectedTimestamp(),
+    netid: network.netid,
   };
   const txid = await signObj(tx, keys);
   const res = await injectTx(tx, txid);
@@ -3989,8 +3300,8 @@ async function injectTx(tx, txid) {
   if (!isOnline) {
     return null;
   }
-  const randomGateway = getGatewayForRequest();
-  if (!randomGateway) {
+  const selectedGateway = getGatewayForRequest();
+  if (!selectedGateway) {
     console.error('No gateway available for transaction injection');
     return null;
   }
@@ -4010,7 +3321,7 @@ async function injectTx(tx, txid) {
       body: stringify({ tx: stringify(tx) }),
     };
     const response = await fetch(
-      `${randomGateway.protocol}://${randomGateway.host}:${randomGateway.port}/inject`,
+      `${selectedGateway.web}/inject`,
       options
     );
     console.log('DEBUG: injectTx response', response);
@@ -4037,12 +3348,17 @@ async function injectTx(tx, txid) {
         tx.type === 'deposit_stake' ||
         tx.type === 'withdraw_stake'
       ) {
-        pendingTxData.to = tx.to;
+        pendingTxData.to = normalizeAddress(tx.to);
       }
       myData.pending.push(pendingTxData);
     } else {
       showToast('Error injecting transaction: ' + data?.result?.reason, 0, 'error');
       console.error('Error injecting transaction:', data?.result?.reason);
+      if (data?.result?.reason?.includes('timestamp out of range')) {
+        console.error('Timestamp out of range, updating timestamp');
+        timeDifference()
+        showToast('Try again.', 0, 'error');
+      }
     }
 
     return data;
@@ -4083,442 +3399,352 @@ async function signObj(tx, keys) {
   return txidHex;
 }
 
-// Service Worker Registration and Management
-async function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) {
-    console.log('Service Worker not supported');
-    return;
+function getTxid(tx){
+  let txo = tx;
+  if (typeof(tx) === "string"){
+    txo = parse(tx)
+  }
+  delete txo.sign;
+  const jstr = stringify(txo);
+  const jstrBytes = utf82bin(jstr);
+  const txidHex = hashBytes(jstrBytes);
+  return txidHex;
+}
+
+class SearchMessagesModal {
+  constructor() {}
+
+  load() {
+    this.modal = document.getElementById('searchModal');
+    this.searchInput = document.getElementById('messageSearch');
+    this.closeButton = document.getElementById('closeSearchModal');
+    this.searchResults = document.getElementById('searchResults');
+
+    this.closeButton.addEventListener('click', () => {this.close();});
+    this.searchInput.addEventListener('input', (e) => {this.handleMessageSearchInput(e);});
   }
 
-  try {
-    // Get the current service worker registration
-    const registration = await navigator.serviceWorker.getRegistration();
+  open() {
+    this.modal.classList.add('active');
+    this.searchInput.focus();
+  }
 
-    // If there's an existing service worker
-    if (registration?.active) {
-      console.log('Service Worker already registered and active');
+  close() {
+    this.modal.classList.remove('active');
+    this.searchInput.value = '';
+    this.searchResults.innerHTML = '';
+  }
 
-      // Set up message handling for the active worker
-      setupServiceWorkerMessaging(registration.active);
+  isActive() {
+    return this.modal.classList.contains('active');
+  }
 
-      // Check if there's a new version waiting
-      if (registration.waiting) {
-        // Notify user about new version
-        showUpdateNotification(registration);
-      }
+  searchMessages(searchText) {
+    if (!searchText || !myData?.contacts) return [];
 
-      return registration;
-    }
+    const results = [];
+    const searchLower = searchText.toLowerCase();
 
-    // Explicitly unregister any existing registration
-    if (registration) {
-      await registration.unregister();
-    }
+    // Search through all contacts and their messages
+    Object.entries(myData.contacts).forEach(([address, contact]) => {
+      if (!contact.messages) return;
 
-    // Register new service worker
-    const newRegistration = await navigator.serviceWorker.register('./service-worker.js', {
-      scope: './',
-      updateViaCache: 'none', // Don't cache service worker file
-    });
-
-    console.log('Service Worker registered successfully:', newRegistration.scope);
-
-    // Set up new service worker handling
-    newRegistration.addEventListener('updatefound', () => {
-      const newWorker = newRegistration.installing;
-
-      newWorker.addEventListener('statechange', () => {
-        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-          // New service worker available
-          showUpdateNotification(newRegistration);
+      contact.messages.forEach((message, index) => {
+        if (message.message.toLowerCase().includes(searchLower)) {
+          // Highlight matching text
+          const messageText = escapeHtml(message.message);
+          const highlightedText = messageText.replace(new RegExp(searchText, 'gi'), (match) => `<mark>${match}</mark>`);
+          const displayedName = getContactDisplayName(contact);
+          results.push({
+            contactAddress: address,
+            username: displayedName,
+            messageId: message.txid,
+            message: message, // Pass the entire message object
+            timestamp: message.timestamp,
+            preview: truncateMessage(highlightedText, 100),
+            my: message.my, // Include the my property
+          });
         }
       });
     });
 
-    // Wait for the service worker to be ready
-    await navigator.serviceWorker.ready;
-    console.log('Service Worker ready');
-
-    return newRegistration;
-  } catch (error) {
-    console.error('Service Worker registration failed:', error);
-    return null;
+    return results.sort((a, b) => b.timestamp - a.timestamp);
   }
-}
 
-// Handle service worker messages
-function setupServiceWorkerMessaging() {
-  // Listen for messages from service worker
-  navigator.serviceWorker.addEventListener('message', (event) => {
-    const data = event.data;
+  // this is also used by contact search 
+  displayEmptyState(containerId, message = 'No results found') {
+    const resultsContainer = document.getElementById(containerId);
+    resultsContainer.innerHTML = `
+          <div class="empty-state">
+              <div class="empty-state-message">${message}</div>
+          </div>
+      `;
+  }
 
-    // Handle different message types
-    switch (data.type) {
-      case 'error':
-        console.error('Service Worker error:', data.error);
-        break;
-      case 'OFFLINE_MODE':
-        console.warn('Service worker detected offline mode:', data.url);
-        isOnline = false;
-        updateUIForConnectivity();
-        markConnectivityDependentElements();
-        break;
-      case 'CACHE_UPDATED':
-        console.log('Cache updated:', data.url);
-        break;
-      case 'CACHE_ERROR':
-        console.error('Cache error:', data.error);
-        break;
-      case 'OFFLINE_READY':
-        showToast('App ready for offline use');
-        break;
-      case 'NEW_CONTENT':
-        showUpdateNotification();
-        break;
+  handleSearchResultClick(result) {
+    try {
+      // Close search modal
+      this.close();
+
+      // Switch to chats view if not already there
+      footer.switchView('chats');
+
+      // Open the chat with this contact
+      chatModal.open(result.contactAddress);
+
+      // Scroll to and highlight the message
+      // could move this into chat modal class as scrollToMessage
+      setTimeout(() => {
+        const messageSelector = `[data-txid="${result.messageId}"]`;
+        const messageElement = document.querySelector(messageSelector);
+        if (messageElement) {
+          messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          messageElement.classList.add('highlighted');
+          setTimeout(() => messageElement.classList.remove('highlighted'), 2000);
+        } else {
+          console.error('Message element not found for selector:', messageSelector);
+          // Could add a toast notification here
+        }
+      }, 300);
+    } catch (error) {
+      console.error('Error handling search result:', error);
+      // Could add error notification here
     }
-  });
-}
-
-// App state management
-function setupAppStateManagement() {
-  // Initialize app state
-  localStorage.setItem('appPaused', '0');
-
-  // Stop polling if service worker was already polling
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.ready.then((registration) => {
-      registration.active?.postMessage({ type: 'stop_polling' });
-    });
   }
 
-  // Handle visibility changes
-  document.addEventListener('visibilitychange', async () => {
-    if (!myData || !myAccount) return; // Only manage state if logged in
+  displaySearchResults(results) {
+    // Create a ul element to properly contain the list items
+    const resultsList = document.createElement('ul');
+    resultsList.className = 'chat-list';
 
-    if (document.hidden) {
-      // App is being hidden/closed
-      console.log('📱 App hidden - starting service worker polling');
-      const timestamp = getCorrectedTimestamp().toString();
-      localStorage.setItem('appPaused', timestamp);
+    results.forEach(async (result) => {
+      const resultElement = document.createElement('li');
+      resultElement.className = 'chat-item search-result-item';
 
-      // Prepare account data for service worker
-      const accountData = {
-        address: myAccount.keys.address,
-        network: {
-          gateways: myData.network.gateways,
-          defaultGatewayIndex: myData.network.defaultGatewayIndex,
-        },
-      };
+      // Generate identicon for the contact
+      const identicon = await generateIdenticon(result.contactAddress);
 
-      // Start polling in service worker with timestamp and account data
-      const registration = await navigator.serviceWorker.ready;
-      registration.active?.postMessage({
-        type: 'start_polling',
-        timestamp,
-        account: accountData,
+      // Format message preview with "You:" prefix if it's a sent message
+      // make this textContent?
+      const messagePreview = result.my ? `You: ${result.preview}` : `${result.preview}`;
+
+      resultElement.innerHTML = `
+              <div class="chat-avatar">
+                  ${identicon}
+              </div>
+              <div class="chat-content">
+                  <div class="chat-header">
+                      <div class="chat-name">${result.username}</div>
+                      <div class="chat-time">${formatTime(result.timestamp)}</div>
+                  </div>
+                  <div class="chat-message">
+                      ${messagePreview}
+                  </div>
+              </div>
+          `;
+
+      resultElement.addEventListener('click', (event) => {
+        event.stopImmediatePropagation(); // Stop all other listeners and bubbling immediately
+        // clear search input and clear results
+        document.getElementById('messageSearch').value = '';
+        document.getElementById('searchResults').innerHTML = '';
+        this.handleSearchResultClick(result);
       });
-    } else {
-      // App is becoming visible/open
-      console.log('📱 App visible - stopping service worker polling');
-      localStorage.setItem('appPaused', '0');
 
-      // Stop polling in service worker
-      const registration = await navigator.serviceWorker.ready;
-      registration.active?.postMessage({ type: 'stop_polling' });
+      resultsList.appendChild(resultElement);
+    });
 
-      const gotChats = await updateChatData();
-      if (gotChats > 0) {
-        await updateChatList();
-      }
-    }
-  });
+    // Clear and append the new list
+    this.searchResults.innerHTML = '';
+    this.searchResults.appendChild(resultsList);
+  }
+
+  handleMessageSearchInput(e) {
+    // debounced search
+    const debouncedSearch = debounce(
+      (searchText) => {
+        const trimmedText = searchText.trim();
+
+        if (!trimmedText) {
+          this.searchResults.innerHTML = '';
+          return;
+        }
+
+        const results = this.searchMessages(trimmedText);
+        if (results.length === 0) {
+          this.displayEmptyState('searchResults', 'No messages found');
+        } else {
+          this.displaySearchResults(results);
+        }
+      },
+      (searchText) => (searchText.length === 1 ? 600 : 300)
+    );
+
+    debouncedSearch(e.target.value);
+  }
 }
 
-/* function requestNotificationPermission() {
-    if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission()
-            .then(permission => {
-                console.log('Notification permission result:', permission);
-                if (permission === 'granted') {
-                    console.log('Notification permission granted');
-                } else {
-                    console.log('Notification permission denied');
-                }
-            })
-            .catch(error => {
-                console.error('Error during notification permission request:', error);
-            });
-    }
-} */
+const searchMessagesModal = new SearchMessagesModal();
 
-// Add these search-related functions
-function searchMessages(searchText) {
-  if (!searchText || !myData?.contacts) return [];
+class SearchContactsModal {
+  constructor() {}
 
-  const results = [];
-  const searchLower = searchText.toLowerCase();
+  load() {
+    this.modal = document.getElementById('contactSearchModal');
+    this.searchInput = document.getElementById('contactSearch');
+    this.resultsContainer = document.getElementById('contactSearchResults');
+    this.closeButton = document.getElementById('closeContactSearchModal');
+    
+    this.closeButton.addEventListener('click', () => { this.close(); });
+    this.searchInput.addEventListener(
+      'input',
+      debounce(
+        (e) => {
+          const searchText = e.target.value.trim();
 
-  // Search through all contacts and their messages
-  Object.entries(myData.contacts).forEach(([address, contact]) => {
-    if (!contact.messages) return;
+          // Just clear results if empty
+          if (!searchText) {
+            document.getElementById('contactSearchResults').innerHTML = '';
+            return;
+          }
 
-    contact.messages.forEach((message, index) => {
-      if (message.message.toLowerCase().includes(searchLower)) {
-        // Highlight matching text
-        const messageText = escapeHtml(message.message);
-        const highlightedText = messageText.replace(
-          new RegExp(searchText, 'gi'),
-          (match) => `<mark>${match}</mark>`
-        );
+          const results = this.searchContacts(searchText);
+          if (results.length === 0) {
+            searchMessagesModal.displayEmptyState('contactSearchResults', 'No contacts found');
+          } else {
+            this.displayContactResults(results, searchText);
+          }
+        },
+        (searchText) => (searchText.length === 1 ? 600 : 300)
+      )
+    );
+  }
+
+  open() {
+    this.modal.classList.add('active');
+    this.searchInput.focus();
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+    this.searchInput.value = '';
+    this.resultsContainer.innerHTML = '';
+  }
+
+  isActive() {
+    return this.modal.classList.contains('active');
+  }
+
+  searchContacts(searchText) {
+    if (!searchText || !myData?.contacts) return [];
+
+    const results = [];
+    const searchLower = searchText.toLowerCase();
+
+    // Search through all contacts
+    Object.entries(myData.contacts).forEach(([address, contact]) => {
+      // Fields to search through
+      const searchFields = [
+        contact.username,
+        contact.name,
+        contact.email,
+        contact.phone,
+        contact.linkedin,
+        contact.x,
+      ].filter(Boolean); // Remove null/undefined values
+
+      // Check if any field matches
+      const matches = searchFields.some((field) => field.toLowerCase().includes(searchLower));
+
+      if (matches) {
+        // Determine match type for sorting
+        const exactMatch = searchFields.some((field) => field.toLowerCase() === searchLower);
+        const startsWithMatch = searchFields.some((field) => field.toLowerCase().startsWith(searchLower));
+
         results.push({
-          contactAddress: address,
-          username: contact.username || address,
-          messageId: index,
-          message: message, // Pass the entire message object
-          timestamp: message.timestamp,
-          preview: truncateMessage(highlightedText, 100),
-          my: message.my, // Include the my property
+          ...contact,
+          address,
+          matchType: exactMatch ? 2 : startsWithMatch ? 1 : 0,
         });
       }
     });
-  });
 
-  return results.sort((a, b) => b.timestamp - a.timestamp);
-}
-
-function displaySearchResults(results) {
-  const searchResults = document.getElementById('searchResults');
-  // Create a ul element to properly contain the list items
-  const resultsList = document.createElement('ul');
-  resultsList.className = 'chat-list';
-
-  results.forEach(async (result) => {
-    const resultElement = document.createElement('li');
-    resultElement.className = 'chat-item search-result-item';
-
-    // Generate identicon for the contact
-    const identicon = await generateIdenticon(result.contactAddress);
-
-    // Format message preview with "You:" prefix if it's a sent message
-    // make this textContent?
-    const messagePreview = result.my ? `You: ${result.preview}` : `${result.preview}`;
-
-    resultElement.innerHTML = `
-            <div class="chat-avatar">
-                ${identicon}
-            </div>
-            <div class="chat-content">
-                <div class="chat-header">
-                    <div class="chat-name">${result.username}</div>
-                    <div class="chat-time">${formatTime(result.timestamp)}</div>
-                </div>
-                <div class="chat-message">
-                    ${messagePreview}
-                </div>
-            </div>
-        `;
-
-    resultElement.addEventListener('click', (event) => {
-      event.stopImmediatePropagation(); // Stop all other listeners and bubbling immediately
-      // clear search input and clear results
-      document.getElementById('messageSearch').value = '';
-      document.getElementById('searchResults').innerHTML = '';
-      handleSearchResultClick(result);
-    });
-
-    resultsList.appendChild(resultElement);
-  });
-
-  // Clear and append the new list
-  searchResults.innerHTML = '';
-  searchResults.appendChild(resultsList);
-}
-
-function displayEmptyState(containerId, message = 'No results found') {
-  const resultsContainer = document.getElementById(containerId);
-  resultsContainer.innerHTML = `
-        <div class="empty-state">
-            <div class="empty-state-message">${message}</div>
-        </div>
-    `;
-}
-
-function handleSearchResultClick(result) {
-  try {
-    // Close search modal
-    document.getElementById('searchModal').classList.remove('active');
-
-    // Switch to chats view if not already there
-    switchView('chats');
-
-    // Open the chat with this contact
-    chatModal.open(result.contactAddress);
-
-    // Scroll to and highlight the message
-    setTimeout(() => {
-      const messageSelector = `[data-message-id="${result.messageId}"]`;
-      const messageElement = document.querySelector(messageSelector);
-      if (messageElement) {
-        messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        messageElement.classList.add('highlighted');
-        setTimeout(() => messageElement.classList.remove('highlighted'), 2000);
-      } else {
-        console.error('Message element not found for selector:', messageSelector);
-        // Could add a toast notification here
+    // Sort results by match type and then alphabetically by username
+    return results.sort((a, b) => {
+      if (a.matchType !== b.matchType) {
+        return b.matchType - a.matchType;
       }
-    }, 300);
-  } catch (error) {
-    console.error('Error handling search result:', error);
-    // Could add error notification here
+      return (a.username || '').localeCompare(b.username || '');
+    });
+  }
+
+  displayContactResults(results, searchText) {
+    this.resultsContainer.innerHTML = '';
+
+    results.forEach(async (contact) => {
+      const contactElement = document.createElement('div');
+      contactElement.className = 'chat-item contact-item';
+
+      // Generate identicon for the contact
+      const identicon = await generateIdenticon(contact.address);
+
+      // Determine which field matched for display
+      const matchedField = [
+        { field: 'username', value: contact.username },
+        { field: 'name', value: contact.name },
+        { field: 'email', value: contact.email },
+        { field: 'phone', value: contact.phone },
+        { field: 'linkedin', value: contact.linkedin },
+        { field: 'x', value: contact.x },
+      ].find((f) => f.value && f.value.toLowerCase().includes(searchText.toLowerCase()));
+
+      // Create match preview with label and highlighted matched value
+      const matchPreview = matchedField
+        ? `${matchedField.field}: ${matchedField.value.replace(
+            new RegExp(searchText, 'gi'),
+            (match) => `<mark>${match}</mark>`
+          )}`
+        : '';
+      const displayedName = getContactDisplayName(contact);
+
+      contactElement.innerHTML = `
+              <div class="chat-avatar">
+                  ${identicon}
+              </div>
+              <div class="chat-content">
+                  <div class="chat-header">
+                      <span class="chat-name">${displayedName}</span>
+                  </div>
+                  <div class="chat-message">
+                      <span class="match-label">${matchPreview}</span>
+                  </div>
+              </div>
+          `;
+
+      // Add click handler to show contact info
+      contactElement.addEventListener('click', () => {
+        // clear search results and input contactSearchResults
+        this.resultsContainer.innerHTML = '';
+        this.searchInput.value = '';
+        // Create display info and open contact info modal
+        contactInfoModal.open(createDisplayInfo(contact));
+        // Close the search modal
+        this.close();
+      });
+
+      this.resultsContainer.appendChild(contactElement);
+    });
   }
 }
 
-function handleSearchInputClick() {
-  const messageSearch = document.getElementById('messageSearch');
-  const searchModal = document.getElementById('searchModal');
-
-  searchModal.classList.add('active');
-  messageSearch.focus();
-}
-
-function handleMessageSearchInput(e) {
-  const searchResults = document.getElementById('searchResults');
-
-  // debounced search
-  const debouncedSearch = debounce(
-    (searchText) => {
-      const trimmedText = searchText.trim();
-
-      if (!trimmedText) {
-        searchResults.innerHTML = '';
-        return;
-      }
-
-      const results = searchMessages(trimmedText);
-      if (results.length === 0) {
-        displayEmptyState('searchResults', 'No messages found');
-      } else {
-        displaySearchResults(results);
-      }
-    },
-    (searchText) => (searchText.length === 1 ? 600 : 300)
-  );
-
-  debouncedSearch(e.target.value);
-}
-
-// Contact search functions
-function searchContacts(searchText) {
-  if (!searchText || !myData?.contacts) return [];
-
-  const results = [];
-  const searchLower = searchText.toLowerCase();
-
-  // Search through all contacts
-  Object.entries(myData.contacts).forEach(([address, contact]) => {
-    // Fields to search through
-    const searchFields = [
-      contact.username,
-      contact.name,
-      contact.email,
-      contact.phone,
-      contact.linkedin,
-      contact.x,
-    ].filter(Boolean); // Remove null/undefined values
-
-    // Check if any field matches
-    const matches = searchFields.some((field) => field.toLowerCase().includes(searchLower));
-
-    if (matches) {
-      // Determine match type for sorting
-      const exactMatch = searchFields.some((field) => field.toLowerCase() === searchLower);
-      const startsWithMatch = searchFields.some((field) =>
-        field.toLowerCase().startsWith(searchLower)
-      );
-
-      results.push({
-        ...contact,
-        address,
-        matchType: exactMatch ? 2 : startsWithMatch ? 1 : 0,
-      });
-    }
-  });
-
-  // Sort results by match type and then alphabetically by username
-  return results.sort((a, b) => {
-    if (a.matchType !== b.matchType) {
-      return b.matchType - a.matchType;
-    }
-    return (a.username || '').localeCompare(b.username || '');
-  });
-}
-
-function displayContactResults(results, searchText) {
-  const resultsContainer = document.getElementById('contactSearchResults');
-  resultsContainer.innerHTML = '';
-
-  results.forEach(async (contact) => {
-    const contactElement = document.createElement('div');
-    contactElement.className = 'chat-item contact-item';
-
-    // Generate identicon for the contact
-    const identicon = await generateIdenticon(contact.address);
-
-    // Determine which field matched for display
-    const matchedField = [
-      { field: 'username', value: contact.username },
-      { field: 'name', value: contact.name },
-      { field: 'email', value: contact.email },
-      { field: 'phone', value: contact.phone },
-      { field: 'linkedin', value: contact.linkedin },
-      { field: 'x', value: contact.x },
-    ].find((f) => f.value && f.value.toLowerCase().includes(searchText.toLowerCase()));
-
-    // Create match preview with label and highlighted matched value
-    const matchPreview = matchedField
-      ? `${matchedField.field}: ${matchedField.value.replace(
-          new RegExp(searchText, 'gi'),
-          (match) => `<mark>${match}</mark>`
-        )}`
-      : '';
-
-    contactElement.innerHTML = `
-            <div class="chat-avatar">
-                ${identicon}
-            </div>
-            <div class="chat-content">
-                <div class="chat-header">
-                    <span class="chat-name">${contact.username || 'Unknown'}</span>
-                </div>
-                <div class="chat-message">
-                    <span class="match-label">${matchPreview}</span>
-                </div>
-            </div>
-        `;
-
-    // Add click handler to show contact info
-    contactElement.addEventListener('click', () => {
-      // clear search results and input contactSearchResults
-      document.getElementById('contactSearchResults').innerHTML = '';
-      document.getElementById('contactSearch').value = '';
-      // Create display info and open contact info modal
-      contactInfoModal.open(createDisplayInfo(contact));
-      // Close the search modal
-      document.getElementById('contactSearchModal').classList.remove('active');
-    });
-
-    resultsContainer.appendChild(contactElement);
-  });
-}
+const searchContactsModal = new SearchContactsModal();
 
 // Create a display info object from a contact object
 function createDisplayInfo(contact) {
   return {
-    username:
-      contact.senderInfo?.username ||
-      contact.username ||
-      contact.address.slice(0, 8) + '...' + contact.address.slice(-6),
-    name: contact.name || contact.senderInfo?.name || 'Not provided',
+    username: contact.username || contact.address.slice(0, 8) + '...' + contact.address.slice(-6),
+    name: contact.name || 'Not Entered',
+    providedname: contact.senderInfo?.name || 'Not provided',
     email: contact.senderInfo?.email || 'Not provided',
     phone: contact.senderInfo?.phone || 'Not provided',
     linkedin: contact.senderInfo?.linkedin || 'Not provided',
@@ -4527,7 +3753,7 @@ function createDisplayInfo(contact) {
   };
 }
 
-// Add this function before the ContactInfoModalManager class
+// Add this function before the ContactInfoModal class
 function showToast(message, duration = 2000, type = 'default') {
   const toastContainer = document.getElementById('toastContainer');
   const toast = document.createElement('div');
@@ -4584,45 +3810,6 @@ function hideToast(toastId) {
   }, 300); // Match transition duration
 }
 
-// Show update notification to user
-function showUpdateNotification() {
-  // Create update notification
-  const updateNotification = document.createElement('div');
-  updateNotification.className = 'update-notification';
-  updateNotification.innerHTML = `
-        <div class="update-message">
-            A new version is available
-            <button class="update-button">
-                Update Now
-            </button>
-        </div>
-    `;
-
-  // Add click handler directly to the button
-  updateNotification.querySelector('.update-button').addEventListener('click', () => {
-    updateServiceWorker();
-  });
-
-  document.body.appendChild(updateNotification);
-}
-
-// Update the service worker
-async function updateServiceWorker() {
-  const registration = await navigator.serviceWorker.getRegistration();
-  if (!registration) return;
-
-  // If there's a waiting worker, activate it
-  if (registration.waiting) {
-    // Send message to service worker to skip waiting
-    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-
-    // Reload once the new service worker takes over
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      console.log('New service worker activated, reloading...');
-      window.location.reload();
-    });
-  }
-}
 
 // Handle online/offline events
 async function handleConnectivityChange() {
@@ -4643,23 +3830,19 @@ async function handleConnectivityChange() {
     if (myAccount && myAccount.keys) {
       try {
         // Update chats with reconnection handling
-        const gotChats = await updateChatData();
+        const gotChats = await chatsScreen.updateChatData();
         if (gotChats > 0) {
-          await updateChatList();
+          await chatsScreen.updateChatList();
         }
 
         // Update contacts with reconnection handling
-        await updateContactsList();
+        await contactsScreen.updateContactsList();
 
         // Update wallet with reconnection handling
-        await updateWalletView();
+        await walletScreen.updateWalletView();
       } catch (error) {
         console.error('Failed to update data on reconnect:', error);
-        showToast(
-          "Some data couldn't be updated. Please refresh if you notice missing information.",
-          5000,
-          'warning'
-        );
+        showToast("Some data couldn't be updated. Please refresh if you notice missing information.", 5000, 'warning');
       }
     }
   } else if (!isOnline) {
@@ -4671,12 +3854,6 @@ async function handleConnectivityChange() {
 
 // Setup connectivity detection
 function setupConnectivityDetection() {
-  // Only setup offline detection if running as installed PWA
-  /* if (!checkIsInstalledPWA()) {
-        isOnline = true; // Always consider online in web mode
-        return;
-    } */
-
   // Listen for browser online/offline events
   window.addEventListener('online', handleConnectivityChange);
   window.addEventListener('offline', handleConnectivityChange);
@@ -4724,6 +3901,9 @@ function markConnectivityDependentElements() {
     '.menu-item[id="openMonitor"]',
     '.menu-item[id="openAbout"]',
     '.menu-item[id="openRemoveAccount"]',
+
+    // submitFeedback button
+    '#submitFeedback',
   ];
 
   // Add data attribute to all network-dependent elements
@@ -4733,7 +3913,7 @@ function markConnectivityDependentElements() {
       element.setAttribute('data-requires-connection', 'true');
 
       // Add tooltip for disabled state
-      element.title = 'This feature requires an internet connection';
+      // element.title = 'This feature requires an internet connection';
 
       // Add aria label for accessibility
       element.setAttribute('aria-disabled', !isOnline);
@@ -4861,11 +4041,21 @@ function initializeGatewayConfig() {
     myData.network.gateways = [];
   }
 
-  // Ensure defaultGatewayIndex property exists and set to -1 (random selection)
-  if (myData.network.defaultGatewayIndex === undefined) {
-    myData.network.defaultGatewayIndex = -1; // -1 means use random selection
+  if (network && network.gateways && network.gateways.length > 0){
+    myData.network = parse(stringify(network))
+  }
+  else if (myData.network.gateway.length <= 0){
+    showToast("No gateway server available; edit network.js file", 0, "error")
+    return;
   }
 
+  // Ensure defaultGatewayIndex property exists and set to -1 (random selection)
+  if (myData.network.defaultGatewayIndex === undefined) {
+    // TODO ping the gateway servers and pick one that is working
+    myData.network.defaultGatewayIndex = 0; // -1 means use random selection
+  }
+  
+  /*
   // If no gateways, initialize with system gateways
   if (myData.network.gateways.length === 0) {
     // Add system gateways from the global network object
@@ -4875,6 +4065,8 @@ function initializeGatewayConfig() {
           protocol: gateway.protocol,
           host: gateway.host,
           port: gateway.port,
+          web: gateway.web,
+          ws: gateway.ws,
           name: `${gateway.host} (System)`,
           isSystem: true,
           isDefault: false,
@@ -4882,6 +4074,7 @@ function initializeGatewayConfig() {
       });
     }
   }
+  */
 }
 
 // Function to get the gateway to use for a request
@@ -4901,284 +4094,12 @@ function getGatewayForRequest() {
   initializeGatewayConfig();
 
   // If we have a default gateway set, use it
-  if (
-    myData.network.defaultGatewayIndex >= 0 &&
-    myData.network.defaultGatewayIndex < myData.network.gateways.length
-  ) {
+  if (myData.network.defaultGatewayIndex >= 0 && myData.network.defaultGatewayIndex < myData.network.gateways.length) {
     return myData.network.gateways[myData.network.defaultGatewayIndex];
   }
 
   // Otherwise use random selection
   return myData.network.gateways[Math.floor(Math.random() * myData.network.gateways.length)];
-}
-
-async function startCamera() {
-  const video = document.getElementById('video');
-  try {
-    // First check if camera API is supported
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Camera API is not supported in this browser');
-    }
-
-    // Stop any existing stream
-    if (startCamera.stream) {
-      stopCamera();
-    }
-
-    // Hide previous results
-    // resultContainer.classList.add('hidden');
-
-    // statusMessage.textContent = 'Accessing camera...';
-    // Request camera access with specific error handling
-    try {
-      startCamera.stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment', // Use back camera
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-        audio: false,
-      });
-    } catch (mediaError) {
-      // Handle specific getUserMedia errors
-      switch (mediaError.name) {
-        case 'NotAllowedError':
-          throw new Error(
-            'Camera access was denied. Please check your browser settings and grant permission to use the camera.'
-          );
-        case 'NotFoundError':
-          throw new Error('No camera device was found on your system.');
-        case 'NotReadableError':
-          throw new Error(
-            'Camera is already in use by another application or encountered a hardware error.'
-          );
-        case 'SecurityError':
-          throw new Error("Camera access was blocked by your browser's security policy.");
-        case 'AbortError':
-          throw new Error('Camera access was cancelled.');
-        default:
-          throw new Error(`Camera error: ${mediaError.message}`);
-      }
-    }
-
-    // Connect the camera stream to the video element
-    video.srcObject = startCamera.stream;
-    video.setAttribute('playsinline', true); // required for iOS Safari
-
-    // When video is ready to play
-    video.onloadedmetadata = function () {
-      video.play();
-
-      // Enable scanning and update button
-      startCamera.scanning = true;
-      // toggleButton.textContent = 'Stop Camera';
-
-      // Start scanning for QR codes
-      // Use interval instead of requestAnimationFrame for better control over scan frequency
-      startCamera.scanInterval = setInterval(readQRCode, 100); // scan every 100ms (10 times per second)
-
-      // statusMessage.textContent = 'Camera active. Point at a QR code.';
-    };
-
-    // Add error handler for video element
-    video.onerror = function (error) {
-      console.error('Video element error:', error);
-      stopCamera();
-      throw new Error('Failed to start video stream');
-    };
-  } catch (error) {
-    console.error('Error accessing camera:', error);
-    stopCamera(); // Ensure we clean up any partial setup
-
-    // Show user-friendly error message
-    showToast(
-      error.message || 'Failed to access camera. Please check your permissions and try again.',
-      5000,
-      'error'
-    );
-
-    // Re-throw the error if you need to handle it further up
-    throw error;
-  }
-}
-
-// changed to use qr.js library instead of jsQR.js
-function readQRCode() {
-  const video = document.getElementById('video');
-  const canvasElement = document.getElementById('canvas');
-  const canvas = canvasElement.getContext('2d');
-
-  if (startCamera.scanning && video.readyState === video.HAVE_ENOUGH_DATA) {
-    // Set canvas size to match video dimensions
-    canvasElement.height = video.videoHeight;
-    canvasElement.width = video.videoWidth;
-
-    // Draw video frame onto canvas
-    canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
-
-    // Get image data for QR processing
-    const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
-
-    try {
-      // Process image with qr.js library
-      // qr.decodeQR expects an object { data, height, width }
-      const decodedText = qr.decodeQR({
-        data: imageData.data,
-        width: imageData.width,
-        height: imageData.height,
-      });
-
-      // If QR code found and decoded
-      if (decodedText) {
-        console.log('QR Code detected:', decodedText);
-        handleSuccessfulScan(decodedText);
-      }
-    } catch (error) {
-      // qr.decodeQR throws error if not found or on error
-      //console.log('QR scanning error or not found:', error); // Optional: Log if needed
-    }
-  }
-}
-
-// Handle successful scan
-function handleSuccessfulScan(data) {
-  // const scanHighlight = document.getElementById('scan-highlight');
-  // Stop scanning
-  if (startCamera.scanInterval) {
-    clearInterval(startCamera.scanInterval);
-    startCamera.scanInterval = null;
-  }
-
-  startCamera.scanning = false;
-
-  // Stop the camera
-  stopCamera();
-
-  /*
-    // Show highlight effect
-    scanHighlight.classList.add('active');
-    setTimeout(() => {
-        scanHighlight.classList.remove('active');
-    }, 500);
-*/
-
-  // Display the result
-  //    qrResult.textContent = data;
-  //    resultContainer.classList.remove('hidden');
-  console.log('Raw QR Data Scanned:', data);
-  if (openQRScanModal.fill) {
-    // Call the assigned fill function (e.g., fillPaymentFromQR or fillStakeAddressFromQR)
-    openQRScanModal.fill(data);
-  }
-
-  closeQRScanModal();
-
-  // Update status
-  //    statusMessage.textContent = 'QR code detected! Camera stopped.';
-}
-
-// Stop camera
-function stopCamera() {
-  const video = document.getElementById('video');
-  if (startCamera.scanInterval) {
-    clearInterval(startCamera.scanInterval);
-    startCamera.scanInterval = null;
-  }
-
-  if (startCamera.stream) {
-    startCamera.stream.getTracks().forEach((track) => track.stop());
-    startCamera.stream = null;
-    video.srcObject = null;
-    startCamera.scanning = false;
-    //        toggleButton.textContent = 'Start Camera';
-    //        statusMessage.textContent = 'Camera stopped.';
-  }
-}
-
-// Changed to use qr.js library instead of jsQR.js
-async function handleQRFileSelect(event, fillFunction) {
-  // Added fillFunction parameter
-  const file = event.target.files[0];
-  if (!file) {
-    return; // No file selected
-  }
-
-  const reader = new FileReader();
-
-  reader.onload = function (e) {
-    const img = new Image();
-    img.onload = async function () {
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      if (!context) {
-        console.error('Could not get 2d context from canvas');
-        showToast('Error processing image', 3000, 'error');
-        event.target.value = ''; // Reset file input
-        return;
-      }
-      canvas.width = img.width;
-      canvas.height = img.height;
-      context.drawImage(img, 0, 0, img.width, img.height);
-      const imageData = context.getImageData(0, 0, img.width, img.height);
-
-      try {
-        // Use qr.js library for decoding
-        const decodedData = qr.decodeQR({
-          data: imageData.data,
-          width: imageData.width,
-          height: imageData.height,
-        });
-
-        if (decodedData) {
-          // handleSuccessfulScan(decodedData); // Original call
-          if (typeof fillFunction === 'function') {
-            fillFunction(decodedData); // Call the provided fill function
-          } else {
-            console.error('No valid fill function provided for QR file select');
-            // Fallback or default behavior if needed, e.g., show generic error
-            showToast('Internal error handling QR data', 3000, 'error');
-          }
-        } else {
-          // qr.decodeQR might throw an error instead of returning null/undefined
-          // This else block might not be reached if errors are always thrown
-          console.error('No QR code found in image (qr.js)');
-          showToast('No QR code found in image', 3000, 'error');
-          // Clear the form fields in case of failure to find QR code
-          document.getElementById('sendForm')?.reset();
-          document.getElementById('sendToAddressError').textContent = '';
-          document.getElementById('balanceWarning').textContent = '';
-        }
-      } catch (error) {
-        console.error('Error processing QR code image with qr.js:', error);
-        // Assume error means no QR code found or decoding failed
-        showToast('Could not read QR code from image', 3000, 'error');
-        // Clear the form fields in case of error
-        document.getElementById('sendForm')?.reset();
-        document.getElementById('sendToAddressError').textContent = '';
-        document.getElementById('balanceWarning').textContent = '';
-      } finally {
-        event.target.value = ''; // Reset the file input value regardless of outcome
-      }
-    };
-    img.onerror = function () {
-      console.error('Error loading image');
-      showToast('Error loading image file', 3000, 'error');
-      event.target.value = ''; // Reset the file input value
-      // Clear the form fields in case of image loading error
-      document.getElementById('sendForm')?.reset();
-      document.getElementById('sendToAddressError').textContent = '';
-      document.getElementById('balanceWarning').textContent = '';
-    };
-    img.src = e.target.result;
-  };
-
-  reader.onerror = function () {
-    console.error('Error reading file');
-    showToast('Error reading file', 3000, 'error');
-    event.target.value = ''; // Reset the file input value
-  };
-
-  reader.readAsDataURL(file);
 }
 
 // WebSocket Manager Class
@@ -5205,10 +4126,7 @@ class WSManager {
   connect() {
     updateWebSocketIndicator();
     // Check if ws is not null and readyState is either CONNECTING or OPEN
-    if (
-      this.ws &&
-      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
-    ) {
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
       console.log('WebSocket connection already established');
       return;
     }
@@ -5221,11 +4139,12 @@ class WSManager {
     }
 
     this.connectionState = 'connecting';
+    const selectedGateway = getGatewayForRequest();
     console.log(
       'WebSocket Connection:',
       JSON.stringify(
         {
-          url: network.websocket.url,
+          url: selectedGateway.ws,
           protocol: window.location.protocol,
           userAgent: navigator.userAgent,
         },
@@ -5236,7 +4155,7 @@ class WSManager {
 
     try {
       console.log('Creating new WebSocket instance');
-      this.ws = new WebSocket(network.websocket.url);
+      this.ws = new WebSocket(selectedGateway.ws);
       this.setupEventHandlers();
     } catch (error) {
       console.error('WebSocket connection creation error:', error);
@@ -5300,11 +4219,11 @@ class WSManager {
           }
         } else if (!data.id && data.result.account_id && data.result.timestamp) {
           console.log('Received new chat notification in ws');
-          const gotChats = await updateChatData();
+          const gotChats = await chatsScreen.updateChatData();
           console.log('gotChats inside of ws.onmessage', gotChats);
           if (gotChats > 0) {
             console.log('inside of ws.onmessage, gotChats > 0, updating chat list');
-            await updateChatList();
+            await chatsScreen.updateChatList();
           }
         } else {
           // Handle any other unexpected message formats
@@ -5438,10 +4357,11 @@ class WSManager {
 
     // Add Firefox-specific diagnostics
     if (navigator.userAgent.includes('Firefox')) {
+      const selectedGateway = getGatewayForRequest();
       diagnosticInfo.firefox = {
         securityPolicy: 'Different security policies for WebSockets',
         mixedContent: 'Check if HTTPS site with WS instead of WSS',
-        websocketUrl: network.websocket.url,
+        websocketUrl: selectedGateway?.ws || 'No gateway available',
         pageProtocol: window.location.protocol,
       };
     }
@@ -5458,10 +4378,7 @@ class WSManager {
     this.reconnectAttempts++;
 
     // Exponential backoff
-    const delay = Math.min(
-      30000,
-      Math.pow(2, this.reconnectAttempts) * 1000 + Math.random() * 1000
-    );
+    const delay = Math.min(30000, Math.pow(2, this.reconnectAttempts) * 1000 + Math.random() * 1000);
 
     const reconnectInfo = {
       attempt: this.reconnectAttempts,
@@ -5503,41 +4420,36 @@ class WSManager {
       environment: {
         protocol: window.location.protocol,
         hostname: window.location.hostname,
-        isLocalhost:
-          window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1',
+        isLocalhost: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1',
       },
     };
 
-    // Add iOS standalone info
-    const isIOSStandalone =
-      /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-      !window.MSStream &&
-      window.navigator.standalone === true;
-    if (isIOSStandalone) {
-      supportInfo.ios = {
-        mode: 'standalone_pwa',
-        restrictions: network.websocket.url.startsWith('wss://'),
-      };
-    }
+    // Get selected gateway for WebSocket URL
+    const selectedGateway = getGatewayForRequest();
 
     // Add Firefox-specific info
     if (navigator.userAgent.includes('Firefox')) {
       supportInfo.firefox = {
-        mixedContentBlocked:
-          window.location.protocol === 'https:' && network.websocket.url.startsWith('ws://'),
-        usingSecureWebSocket: network.websocket.url.startsWith('wss://'),
-        port: network.websocket.url.split(':')[2]?.split('/')[0] || 'default',
+        mixedContentBlocked: window.location.protocol === 'https:' && selectedGateway?.ws ? selectedGateway.ws.startsWith('ws://') : false,
+        usingSecureWebSocket: selectedGateway?.ws ? selectedGateway.ws.startsWith('wss://') : false,
+        port: selectedGateway?.ws ? selectedGateway.ws.split(':')[2]?.split('/')[0] || 'default' : 'No gateway',
       };
     }
 
     // Add WebSocket URL details
-    const wsUrl = new URL(network.websocket.url);
-    supportInfo.websocket = {
+    const wsUrl = new URL(selectedGateway?.ws);
+    supportInfo.websocket = wsUrl ? {
       protocol: wsUrl.protocol,
       hostname: wsUrl.hostname,
       port: wsUrl.port || (wsUrl.protocol === 'wss:' ? '443' : '80'),
       pathname: wsUrl.pathname,
       requiresSecureContext: wsUrl.protocol === 'wss:' && !supportInfo.environment.isLocalhost,
+    } : {
+      protocol: 'No gateway',
+      hostname: 'No gateway',
+      port: 'No gateway',
+      pathname: 'No gateway',
+      requiresSecureContext: false,
     };
 
     console.log('WebSocket Support Analysis:', JSON.stringify(supportInfo, null, 2));
@@ -5579,10 +4491,11 @@ class WSManager {
     }
 
     try {
+      const selectedGateway = getGatewayForRequest();
       const initInfo = {
         status: 'starting',
         config: {
-          url: network.websocket.url,
+          url: selectedGateway?.ws || 'No gateway available',
         },
         account: {
           available: !!myAccount?.keys?.address,
@@ -5614,11 +4527,8 @@ class WSManager {
   }
 }
 
-let wsManager = new WSManager(); // this is set to new WSManager() for convience
-
-function closeSendAssetConfirmModal() {
-  document.getElementById('sendAssetConfirmModal').classList.remove('active');
-  document.getElementById('sendAssetFormModal').classList.add('active');
+if (!useLongPolling) {
+  wsManager = new WSManager();
 }
 
 /**
@@ -5633,9 +4543,7 @@ function insertSorted(array, item, timestampField = 'timestamp') {
   // Find the index where the new item should be inserted.
   // We are looking for the first element with a timestamp LESS THAN the new item's timestamp.
   // This is because the array is sorted descending (newest first).
-  const index = array.findIndex(
-    (existingItem) => existingItem[timestampField] < item[timestampField]
-  );
+  const index = array.findIndex((existingItem) => existingItem[timestampField] < item[timestampField]);
 
   if (index === -1) {
     // If no such element is found, the new item is the oldest (or the array is empty),
@@ -5698,10 +4606,7 @@ async function timeDifference(retryCount = 0) {
     );
   } catch (error) {
     // Handle errors from queryNetwork (e.g., network issues, gateway unavailable)
-    console.warn(
-      `Attempt ${retryCount + 1} failed to fetch time via queryNetwork(${timestampEndpoint}):`,
-      error
-    );
+    console.warn(`Attempt ${retryCount + 1} failed to fetch time via queryNetwork(${timestampEndpoint}):`, error);
 
     if (retryCount < maxRetries) {
       console.log(`Retrying time fetch in ${retryDelay}ms... (Attempt ${retryCount + 2})`);
@@ -5740,6 +4645,7 @@ function updateWebSocketIndicator() {
   }
   const indicator = document.getElementById('wsStatusIndicator');
   if (!indicator) return;
+  indicator.style.display = 'block';
   if (!wsManager || !wsManager.isConnected()) {
     indicator.textContent = 'Not Connected';
     indicator.className = 'ws-status-indicator ws-red';
@@ -5798,10 +4704,7 @@ class RemoveAccountModal {
   load() {
     // called when the DOM is loaded; can setup event handlers here
     this.modal = document.getElementById('removeAccountModal');
-    document.getElementById('openRemoveAccount').addEventListener('click', () => this.open());
-    document
-      .getElementById('closeRemoveAccountModal')
-      .addEventListener('click', () => this.close());
+    document.getElementById('closeRemoveAccountModal').addEventListener('click', () => this.close());
     document.getElementById('confirmRemoveAccount').addEventListener('click', () => this.submit());
   }
 
@@ -5861,11 +4764,8 @@ class BackupAccountModal {
   load() {
     // called when the DOM is loaded; can setup event handlers here
     this.modal = document.getElementById('exportModal');
-    document.getElementById('openExportForm').addEventListener('click', () => this.open());
     document.getElementById('closeExportForm').addEventListener('click', () => this.close());
-    document
-      .getElementById('exportForm')
-      .addEventListener('submit', (event) => this.handleSubmit(event));
+    document.getElementById('exportForm').addEventListener('submit', (event) => this.handleSubmit(event));
   }
 
   open() {
@@ -5903,7 +4803,7 @@ class BackupAccountModal {
       this.close();
     } catch (error) {
       console.error('Encryption failed:', error);
-      alert('Failed to encrypt data. Please try again.');
+      showToast('Failed to encrypt data. Please try again.', 0, 'error');
     }
   }
 }
@@ -5915,11 +4815,8 @@ class RestoreAccountModal {
   load() {
     // called when the DOM is loaded; can setup event handlers here
     this.modal = document.getElementById('importModal');
-    document.getElementById('importAccountButton').addEventListener('click', () => this.open());
     document.getElementById('closeImportForm').addEventListener('click', () => this.close());
-    document
-      .getElementById('importForm')
-      .addEventListener('submit', (event) => this.handleSubmit(event));
+    document.getElementById('importForm').addEventListener('submit', (event) => this.handleSubmit(event));
   }
 
   open() {
@@ -6001,304 +4898,29 @@ class RestoreAccountModal {
 }
 const restoreAccountModal = new RestoreAccountModal();
 
-class GatewayModal {
-  constructor() {}
-
-  load() {
-    this.modal = document.getElementById('gatewayModal');
-    this.addEditModal = document.getElementById('addEditGatewayModal');
-    this.gatewayList = document.getElementById('gatewayList');
-    this.gatewayForm = document.getElementById('gatewayForm');
-
-    // Setup event listeners when DOM is loaded
-    document.getElementById('openNetwork').addEventListener('click', () => this.open());
-    document.getElementById('closeGatewayForm').addEventListener('click', () => this.close());
-    document.getElementById('addGatewayButton').addEventListener('click', () => this.openAddForm());
-    document
-      .getElementById('closeAddEditGatewayForm')
-      .addEventListener('click', () => this.closeAddEditForm());
-    this.gatewayForm.addEventListener('submit', (e) => this.handleFormSubmit(e));
-  }
-
-  open() {
-    // Initialize gateway configuration if needed
-    initializeGatewayConfig();
-    this.modal.classList.add('active');
-    this.updateList();
-  }
-
-  close() {
-    this.modal.classList.remove('active');
-  }
-
-  openAddForm() {
-    this.modal.classList.remove('active');
-    this.gatewayForm.reset();
-    document.getElementById('gatewayEditIndex').value = -1;
-    document.getElementById('addEditGatewayTitle').textContent = 'Add Gateway';
-    this.addEditModal.classList.add('active');
-  }
-
-  closeAddEditForm() {
-    this.addEditModal.classList.remove('active');
-    this.modal.classList.add('active');
-    this.updateList();
-  }
-
-  updateList() {
-    // Clear existing list
-    this.gatewayList.innerHTML = '';
-
-    // If no gateways, show empty state
-    if (myData.network.gateways.length === 0) {
-      this.gatewayList.innerHTML = `
-                <div class="empty-state">
-                    <div style="font-weight: bold; margin-bottom: 0.5rem">No Gateways</div>
-                    <div>Add a gateway to get started</div>
-                </div>`;
-      return;
-    }
-
-    // Add "Use Random Selection" option
-    const randomOption = document.createElement('div');
-    randomOption.className = 'gateway-item random-option';
-    randomOption.innerHTML = `
-            <div class="gateway-info">
-                <div class="gateway-name">Random Selection</div>
-                <div class="gateway-url">Selects random gateway from list</div>
-            </div>
-            <div class="gateway-actions">
-                <label class="default-toggle">
-                    <input type="radio" name="defaultGateway" ${myData.network.defaultGatewayIndex === -1 ? 'checked' : ''}>
-                    <span>Default</span>
-                </label>
-            </div>
-        `;
-
-    const randomToggle = randomOption.querySelector('input[type="radio"]');
-    randomToggle.addEventListener('change', () => {
-      if (randomToggle.checked) {
-        this.setDefaultGateway(-1);
-      }
-    });
-
-    this.gatewayList.appendChild(randomOption);
-
-    // Add each gateway to the list
-    myData.network.gateways.forEach((gateway, index) => {
-      const isDefault = index === myData.network.defaultGatewayIndex;
-      const canRemove = !gateway.isSystem;
-
-      const gatewayItem = document.createElement('div');
-      gatewayItem.className = 'gateway-item';
-      gatewayItem.innerHTML = `
-                <div class="gateway-info">
-                    <div class="gateway-name">${escapeHtml(gateway.name)}</div>
-                    <div class="gateway-url">${gateway.protocol}://${escapeHtml(gateway.host)}:${gateway.port}</div>
-                    ${gateway.isSystem ? '<span class="system-badge">System</span>' : ''}
-                </div>
-                <div class="gateway-actions">
-                    <label class="default-toggle">
-                        <input type="radio" name="defaultGateway" ${isDefault ? 'checked' : ''}>
-                        <span>Default</span>
-                    </label>
-                    <button class="icon-button edit-button" title="Edit">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                        </svg>
-                    </button>
-                    ${
-                      canRemove
-                        ? `
-                        <button class="icon-button remove-button" title="Remove">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M3 6h18"></path>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
-                                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                            </svg>
-                        </button>
-                    `
-                        : ''
-                    }
-                </div>
-            `;
-
-      // Add event listeners
-      const defaultToggle = gatewayItem.querySelector('input[type="radio"]');
-      defaultToggle.addEventListener('change', () => {
-        if (defaultToggle.checked) {
-          this.setDefaultGateway(index);
-        }
-      });
-
-      const editButton = gatewayItem.querySelector('.edit-button');
-      editButton.addEventListener('click', () => {
-        this.openEditForm(index);
-      });
-
-      if (canRemove) {
-        const removeButton = gatewayItem.querySelector('.remove-button');
-        removeButton.addEventListener('click', () => {
-          this.confirmRemove(index);
-        });
-      }
-
-      this.gatewayList.appendChild(gatewayItem);
-    });
-  }
-
-  openEditForm(index) {
-    this.modal.classList.remove('active');
-    const gateway = myData.network.gateways[index];
-    document.getElementById('gatewayName').value = gateway.name;
-    document.getElementById('gatewayProtocol').value = gateway.protocol;
-    document.getElementById('gatewayHost').value = gateway.host;
-    document.getElementById('gatewayPort').value = gateway.port;
-    document.getElementById('gatewayEditIndex').value = index;
-    document.getElementById('addEditGatewayTitle').textContent = 'Edit Gateway';
-    this.addEditModal.classList.add('active');
-  }
-
-  async handleFormSubmit(event) {
-    event.preventDefault();
-
-    const formData = {
-      protocol: document.getElementById('gatewayProtocol').value,
-      host: document.getElementById('gatewayHost').value,
-      port: parseInt(document.getElementById('gatewayPort').value),
-      name: document.getElementById('gatewayName').value,
-    };
-
-    const editIndex = parseInt(document.getElementById('gatewayEditIndex').value);
-
-    if (editIndex >= 0) {
-      this.updateGateway(editIndex, formData.protocol, formData.host, formData.port, formData.name);
-    } else {
-      this.addGateway(formData.protocol, formData.host, formData.port, formData.name);
-    }
-
-    this.closeAddEditForm();
-  }
-
-  confirmRemove(index) {
-    if (confirm('Are you sure you want to remove this gateway?')) {
-      this.removeGateway(index);
-    }
-  }
-
-  addGateway(protocol, host, port, name) {
-    // Initialize if needed
-    initializeGatewayConfig();
-
-    // Add the new gateway
-    myData.network.gateways.push({
-      protocol,
-      host,
-      port,
-      name,
-      isSystem: false,
-      isDefault: false,
-    });
-
-    // Update the UI
-    this.updateList();
-
-    // Show success message
-    showToast('Gateway added successfully');
-  }
-
-  updateGateway(index, protocol, host, port, name) {
-    // Check if index is valid
-    if (index >= 0 && index < myData.network.gateways.length) {
-      const gateway = myData.network.gateways[index];
-
-      // Update gateway properties
-      gateway.protocol = protocol;
-      gateway.host = host;
-      gateway.port = port;
-      gateway.name = name;
-
-      // Update the UI
-      this.updateList();
-
-      // Show success message
-      showToast('Gateway updated successfully');
-    }
-  }
-
-  removeGateway(index) {
-    // Check if index is valid
-    if (index >= 0 && index < myData.network.gateways.length) {
-      const gateway = myData.network.gateways[index];
-
-      // Only allow removing non-system gateways
-      if (!gateway.isSystem) {
-        // If this was the default gateway, reset to random selection
-        if (myData.network.defaultGatewayIndex === index) {
-          myData.network.defaultGatewayIndex = -1;
-        } else if (myData.network.defaultGatewayIndex > index) {
-          // Adjust default gateway index if needed
-          myData.network.defaultGatewayIndex--;
-        }
-
-        // Remove the gateway
-        myData.network.gateways.splice(index, 1);
-
-        // Update the UI
-        this.updateList();
-
-        // Show success message
-        showToast('Gateway removed successfully');
-      }
-    }
-  }
-
-  setDefaultGateway(index) {
-    // Reset all gateways to non-default
-    myData.network.gateways.forEach((gateway) => {
-      gateway.isDefault = false;
-    });
-
-    // Set the new default gateway index
-    myData.network.defaultGatewayIndex = index;
-
-    // If setting a specific gateway as default, mark it
-    if (index >= 0 && index < myData.network.gateways.length) {
-      myData.network.gateways[index].isDefault = true;
-    }
-
-    // Update the UI
-    this.updateList();
-
-    // Show success message
-    const message =
-      index === -1
-        ? 'Using random gateway selection for better reliability'
-        : 'Default gateway set';
-    showToast(message);
-  }
-}
-const gatewayModal = new GatewayModal();
-
 class TollModal {
   constructor() {
-    this.modal = document.getElementById('tollModal');
     this.currentCurrency = 'LIB'; // Initialize currency state
     this.oldToll = null;
     this.minToll = null; // Will be set from network account
-    this.minTollDisplay = document.getElementById('minTollDisplay');
   }
 
   load() {
-    document.getElementById('openToll').addEventListener('click', () => this.open());
-    document.getElementById('closeTollModal').addEventListener('click', () => this.close());
-    document
-      .getElementById('toggleTollCurrency')
-      .addEventListener('click', (event) => this.handleToggleTollCurrency(event));
-    document
-      .getElementById('tollForm')
-      .addEventListener('submit', (event) => this.saveAndPostNewToll(event));
+    this.modal = document.getElementById('tollModal');
+    this.minTollDisplay = document.getElementById('minTollDisplay');
+    this.newTollAmountInputElement = document.getElementById('newTollAmountInput');
+    this.toggleTollCurrencyElement = document.getElementById('toggleTollCurrency');
+    this.warningMessageElement = document.getElementById('tollWarningMessage');
+    this.saveButton = document.getElementById('saveNewTollButton');
+    this.closeButton = document.getElementById('closeTollModal');
+    this.tollForm = document.getElementById('tollForm');
+    this.tollCurrencySymbol = document.getElementById('tollCurrencySymbol');
+
+    this.tollForm.addEventListener('submit', (event) => this.saveAndPostNewToll(event));
+    this.closeButton.addEventListener('click', () => this.close());
+    this.toggleTollCurrencyElement.addEventListener('click', (event) => this.handleToggleTollCurrency(event));
+    this.newTollAmountInputElement.addEventListener('input', () => this.newTollAmountInputElement.value = normalizeUnsignedFloat(this.newTollAmountInputElement.value));
+    this.newTollAmountInputElement.addEventListener('input', () => this.updateSaveButtonState());
   }
 
   open() {
@@ -6312,9 +4934,12 @@ class TollModal {
 
     this.updateTollDisplay(toll, tollUnit);
 
-    this.currentCurrency = 'LIB'; // Reset currency state
-    document.getElementById('tollCurrencySymbol').textContent = this.currentCurrency;
-    document.getElementById('newTollAmountInput').value = ''; // Clear input field
+    this.currentCurrency = tollUnit;
+    this.tollCurrencySymbol.textContent = this.currentCurrency;
+    this.newTollAmountInputElement.value = ''; // Clear input field
+    this.warningMessageElement.textContent = '';
+    this.warningMessageElement.style.display = 'none';
+    this.saveButton.disabled = true;
 
     // Update min toll display under input
     const minTollValue = parseFloat(big2str(this.minToll, 18)).toFixed(6); // Show 6 decimal places
@@ -6332,21 +4957,16 @@ class TollModal {
    */
   async handleToggleTollCurrency(event) {
     event.preventDefault();
-    const newTollAmountInput = document.getElementById('newTollAmountInput');
-    const tollCurrencySymbol = document.getElementById('tollCurrencySymbol');
 
     this.currentCurrency = this.currentCurrency === 'LIB' ? 'USD' : 'LIB';
-    tollCurrencySymbol.textContent = this.currentCurrency;
+    this.tollCurrencySymbol.textContent = this.currentCurrency;
 
-    const scalabilityFactor =
-      parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
-    if (newTollAmountInput.value !== '') {
-      const currentValue = parseFloat(newTollAmountInput.value);
+    const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+    if (this.newTollAmountInputElement.value !== '') {
+      const currentValue = parseFloat(this.newTollAmountInputElement.value);
       const convertedValue =
-        this.currentCurrency === 'USD'
-          ? currentValue * scalabilityFactor
-          : currentValue / scalabilityFactor;
-      newTollAmountInput.value = convertedValue.toString();
+        this.currentCurrency === 'USD' ? currentValue * scalabilityFactor : currentValue / scalabilityFactor;
+      this.newTollAmountInputElement.value = convertedValue.toString();
     }
 
     // Update min toll display with converted value
@@ -6356,6 +4976,7 @@ class TollModal {
     } else {
       this.minTollDisplay.textContent = `Minimum toll: ${parseFloat(big2str(this.minToll, 18)).toFixed(6)} LIB`; // Show 6 decimal places for LIB
     }
+    this.updateSaveButtonState();
   }
 
   /**
@@ -6365,40 +4986,48 @@ class TollModal {
    */
   async saveAndPostNewToll(event) {
     event.preventDefault();
-    const newTollAmountInput = document.getElementById('newTollAmountInput');
-    let newTollValue = parseFloat(newTollAmountInput.value);
+    let newTollValue = parseFloat(this.newTollAmountInputElement.value);
+
+    // disable submit button
+    this.saveButton.disabled = true;
 
     if (isNaN(newTollValue) || newTollValue < 0) {
-      // console.error("Invalid toll amount");
       showToast('Invalid toll amount entered.', 0, 'error');
       return;
     }
 
-    const newToll = bigxnum2big(wei, newTollAmountInput.value);
+    const newToll = bigxnum2big(wei, this.newTollAmountInputElement.value);
 
     // Check if the toll is non-zero but less than minimum
     if (newToll > 0n) {
       if (this.currentCurrency === 'LIB' && newToll < this.minToll) {
-        showToast(
-          `Toll must be at least ${parseFloat(big2str(this.minToll, 18)).toFixed(6)} LIB`,
-          0,
-          'error'
-        );
+        showToast(`Toll must be at least ${parseFloat(big2str(this.minToll, 18)).toFixed(6)} LIB or 0 LIB`, 0, 'error');
         return;
       }
       if (this.currentCurrency === 'USD') {
-        const scalabilityFactor =
-          parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+        const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
         const newTollLIB = bigxnum2big(newToll, (1 / scalabilityFactor).toString());
         if (newTollLIB < this.minToll) {
           const minTollUSD = bigxnum2big(this.minToll, scalabilityFactor.toString());
-          showToast(
-            `Toll must be at least ${parseFloat(big2str(minTollUSD, 18)).toFixed(4)} USD`,
-            0,
-            'error'
-          );
+          showToast(`Toll must be at least ${parseFloat(big2str(minTollUSD, 18)).toFixed(4)} USD or 0 USD`, 0, 'error');
           return;
         }
+      }
+    }
+
+    // Add maximum toll validation
+    if (this.currentCurrency === 'LIB') {
+      if (newTollValue > MAX_TOLL) {
+        showToast(`Toll cannot exceed ${MAX_TOLL} LIB`, 0, 'error');
+        return;
+      }
+    } else {
+      // For USD, convert the max toll to USD for comparison
+      const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+      const maxTollUSD = MAX_TOLL * scalabilityFactor;
+      if (newTollValue > maxTollUSD) {
+        showToast(`Toll cannot exceed ${maxTollUSD.toFixed(2)} USD`, 0, 'error');
+        return;
       }
     }
 
@@ -6412,6 +5041,8 @@ class TollModal {
       return;
     }
 
+    this.newTollAmountInputElement.value = '';
+
     // Update the display for tollAmountLIB and tollAmountUSD
     this.updateTollDisplay(newToll, this.currentCurrency);
   }
@@ -6423,8 +5054,7 @@ class TollModal {
    * @returns {void}
    */
   updateTollDisplay(toll, tollUnit) {
-    const scalabilityFactor =
-      parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+    const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
     let tollValueLib = '';
     let tollValueUSD = '';
 
@@ -6468,11 +5098,96 @@ class TollModal {
       type: 'toll',
       timestamp: getCorrectedTimestamp(),
       tollUnit: tollUnit,
+      netid: network.netid,
     };
 
     const txid = await signObj(tollTx, myAccount.keys);
     const response = await injectTx(tollTx, txid);
     return response;
+  }
+
+  /**
+   * Gets the warning message based on input validation
+   * @returns {string|null} - The warning message or null if no warning
+   */
+  getWarningMessage() {
+    const value = this.newTollAmountInputElement.value;
+
+    // return null if just . or ,
+    if (value.trim() === '.' || value.trim() === ',') {
+      return null;
+    }
+
+    // check if input is empty or only whitespace
+    if (value.trim() === '') {
+      return 'Please enter a toll amount';
+    }
+
+    const newTollValue = parseFloat(value);
+
+    // Check if it's a valid number
+    if (isNaN(newTollValue) || newTollValue < 0) {
+      return 'Please enter a valid positive number';
+    }
+
+    // Allow zero toll
+    if (newTollValue === 0) {
+      return null;
+    }
+
+    const newToll = bigxnum2big(wei, value);
+
+    // Check minimum toll requirements
+    if (this.currentCurrency === 'LIB') {
+      if (newToll < this.minToll) {
+        return `Toll must be at least ${parseFloat(big2str(this.minToll, 18)).toFixed(6)} LIB or 0 LIB`;
+      }
+    } else {
+      const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+      const newTollLIB = bigxnum2big(newToll, (1 / scalabilityFactor).toString());
+      if (newTollLIB < this.minToll) {
+        const minTollUSD = bigxnum2big(this.minToll, scalabilityFactor.toString());
+        return `Toll must be at least ${parseFloat(big2str(minTollUSD, 18)).toFixed(4)} USD or 0 USD`;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Updates the save button state and warning message based on input validation
+   */
+  updateSaveButtonState() {
+    const warningMessage = this.getWarningMessage();
+    const isValid = !warningMessage;
+
+    // Update save button state
+    this.saveButton.disabled = !isValid;
+
+    // Additional check: disable if the new toll is the same as the current toll
+    if (isValid) {
+      const newTollValue = parseFloat(this.newTollAmountInputElement.value);
+      const newTollBigInt = bigxnum2big(wei, this.newTollAmountInputElement.value);
+      const currentToll = myData.settings.toll;
+      const currentTollUnit = myData.settings.tollUnit;
+
+      if (!isNaN(newTollValue)) {
+        if (currentTollUnit === this.currentCurrency) {
+          if (newTollBigInt === currentToll) {
+            this.saveButton.disabled = true;
+          }
+        } 
+      }
+    }
+
+    // Update warning message
+    if (warningMessage) {
+      this.warningMessageElement.textContent = warningMessage;
+      this.warningMessageElement.style.display = 'block';
+    } else {
+      this.warningMessageElement.textContent = '';
+      this.warningMessageElement.style.display = 'none';
+    }
   }
 }
 
@@ -6480,23 +5195,24 @@ const tollModal = new TollModal();
 
 // Invite Modal
 class InviteModal {
-  constructor() {
+  constructor() {}
+
+  load() {
     this.modal = document.getElementById('inviteModal');
     this.inviteEmailInput = document.getElementById('inviteEmail');
     this.invitePhoneInput = document.getElementById('invitePhone');
     this.submitButton = document.querySelector('#inviteForm button[type="submit"]');
-  }
+    this.closeButton = document.getElementById('closeInviteModal');
+    this.inviteForm = document.getElementById('inviteForm');
 
-  load() {
-    // Set up event listeners
-    document.getElementById('openInvite').addEventListener('click', () => this.open());
-    document.getElementById('closeInviteModal').addEventListener('click', () => this.close());
-    document
-      .getElementById('inviteForm')
-      .addEventListener('submit', (event) => this.handleSubmit(event));
+    this.closeButton.addEventListener('click', () => this.close());
+    this.inviteForm.addEventListener('submit', (event) => this.handleSubmit(event));
 
-    // Add input event listeners for email and phone fields
+    // input event listeners for email and phone fields
+    this.inviteEmailInput.addEventListener('input', () => this.inviteEmailInput.value = normalizeEmail(this.inviteEmailInput.value));
     this.inviteEmailInput.addEventListener('input', () => this.validateInputs());
+    this.invitePhoneInput.addEventListener('input', () => this.invitePhoneInput.value = normalizePhone(this.invitePhoneInput.value));
+    this.invitePhoneInput.addEventListener('blur', () => this.invitePhoneInput.value = normalizePhone(this.invitePhoneInput.value, true));
     this.invitePhoneInput.addEventListener('input', () => this.validateInputs());
   }
 
@@ -6536,7 +5252,7 @@ class InviteModal {
     }
 
     try {
-      const response = await fetch('http://arimaa.com:5050/api/invite', {
+        const response = await fetch('https://inv.liberdus.com:2053/api/invite', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -6564,19 +5280,22 @@ class InviteModal {
 const inviteModal = new InviteModal();
 
 class AboutModal {
-  constructor() {
-    this.modal = document.getElementById('aboutModal');
-  }
+  constructor() {}
 
   load() {
+    this.modal = document.getElementById('aboutModal');
+    this.closeButton = document.getElementById('closeAboutModal');
+    this.versionDisplay = document.getElementById('versionDisplayAbout');
+    this.networkName = document.getElementById('networkNameAbout');
+    this.netId = document.getElementById('netIdAbout');
+
     // Set up event listeners
-    document.getElementById('openAbout').addEventListener('click', () => this.open());
-    document.getElementById('closeAboutModal').addEventListener('click', () => this.close());
+    this.closeButton.addEventListener('click', () => this.close());
 
     // Set version and network information once during initialization
-    document.getElementById('versionDisplayAbout').textContent = myVersion + ' ' + version;
-    document.getElementById('networkNameAbout').textContent = network.name;
-    document.getElementById('netIdAbout').textContent = network.netid;
+    this.versionDisplay.textContent = myVersion + ' ' + version;
+    this.networkName.textContent = network.name;
+    this.netId.textContent = network.netid;
   }
 
   open() {
@@ -6591,14 +5310,15 @@ class AboutModal {
 const aboutModal = new AboutModal();
 
 class ContactModal {
-  constructor() {
-    this.modal = document.getElementById('contactModal');
-  }
+  constructor() {}
 
   load() {
-    document.getElementById('openContact').addEventListener('click', () => this.open());
-    document.getElementById('closeContactModal').addEventListener('click', () => this.close());
-    document.getElementById('submitFeedback').addEventListener('click', () => {
+    this.modal = document.getElementById('contactModal');
+    this.closeButton = document.getElementById('closeContactModal');
+    this.submitFeedbackButton = document.getElementById('submitFeedback');
+
+    this.closeButton.addEventListener('click', () => this.close());
+    this.submitFeedbackButton.addEventListener('click', () => {
       window.open('https://github.com/liberdus/web-client-v2/issues', '_blank');
     });
   }
@@ -6620,23 +5340,97 @@ class MyProfileModal {
     // called when the DOM is loaded; can setup event handlers here
     this.modal = document.getElementById('accountModal');
     this.closeButton = document.getElementById('closeAccountForm');
-    document.getElementById('openAccountForm').addEventListener('click', () => this.open());
-    this.closeButton.addEventListener('click', () => this.close());
-    document
-      .getElementById('accountForm')
-      .addEventListener('submit', (event) => this.handleSubmit(event));
+    this.name = document.getElementById('name');
+    this.email = document.getElementById('email');
+    this.phone = document.getElementById('phone');
+    this.linkedin = document.getElementById('linkedin');
+    this.x = document.getElementById('x');
+    this.accountForm = document.getElementById('accountForm');
     this.submitButton = document.querySelector('#accountForm .update-button');
+
+    this.closeButton.addEventListener('click', () => this.close());
+    this.accountForm.addEventListener('submit', (event) => this.handleSubmit(event));
+    
+
+    // Add input event listeners for validation
+    this.name.addEventListener('input', (e) => this.handleNameInput(e));
+    this.name.addEventListener('blur', (e) => this.handleNameBlur(e));
+    this.phone.addEventListener('input', (e) => this.handlePhoneInput(e));
+    this.phone.addEventListener('blur', (e) => this.handlePhoneBlur(e));
+    this.email.addEventListener('input', (e) => this.handleEmailInput(e));
+    this.linkedin.addEventListener('input', (e) => this.handleLinkedInInput(e));
+    this.linkedin.addEventListener('blur', (e) => this.handleLinkedInBlur(e));
+    this.x.addEventListener('input', (e) => this.handleXTwitterInput(e));
+    this.x.addEventListener('blur', (e) => this.handleXTwitterBlur(e));
+  }
+
+  // Input sanitization and validation methods
+  handleNameInput(e) {
+    // Allow letters, spaces, and basic punctuation
+//    const normalized = e.target.value.replace(/[^a-zA-Z\s\-'.]/g, '');
+    const normalized = normalizeName(e.target.value)
+    e.target.value = normalized;
+  }
+
+  handleNameBlur(e) {
+    const normalized = normalizeName(e.target.value, true)
+    e.target.value = normalized;
+  }
+
+  handlePhoneInput(e) {
+    // Allow only numbers, spaces, dashes, and parentheses
+//    const normalized = e.target.value.replace(/[^\d\s\-()]/g, '');
+    const normalized = normalizePhone(e.target.value);
+    e.target.value = normalized;
+  }
+
+  handleEmailInput(e) {
+    const normalized = normalizeEmail(e.target.value);
+    e.target.value = normalized;
+  }
+
+  handlePhoneBlur(e) {
+    const normalized = normalizePhone(e.target.value, true);
+    e.target.value = normalized;
+  }
+
+  handleLinkedInInput(e) {
+    // Allow letters, numbers, dashes, and underscores
+//    const normalized = e.target.value.replace(/[^a-zA-Z0-9\-_]/g, '');
+    const normalized = normalizeLinkedinUsername(e.target.value);
+    e.target.value = normalized;
+  }
+
+  handleLinkedInBlur(e) {
+    // Allow letters, numbers, dashes, and underscores
+//    const normalized = e.target.value.replace(/[^a-zA-Z0-9\-_]/g, '');
+    const normalized = normalizeLinkedinUsername(e.target.value, true);
+    e.target.value = normalized;
+  }
+
+  handleXTwitterInput(e) {
+    // Allow letters, numbers, and underscores
+//    const normalized = e.target.value.replace(/[^a-zA-Z0-9_]/g, '');
+    const normalized = normalizeXTwitterUsername(e.target.value);
+    e.target.value = normalized;
+  }
+
+  handleXTwitterBlur(e) {
+    // Allow letters, numbers, and underscores
+//    const normalized = e.target.value.replace(/[^a-zA-Z0-9_]/g, '');
+    const normalized = normalizeXTwitterUsername(e.target.value, true);
+    e.target.value = normalized;
   }
 
   open() {
     // called when the modal needs to be opened
     this.modal.classList.add('active');
     if (myData && myData.account) {
-      document.getElementById('name').value = myData.account.name || '';
-      document.getElementById('email').value = myData.account.email || '';
-      document.getElementById('phone').value = myData.account.phone || '';
-      document.getElementById('linkedin').value = myData.account.linkedin || '';
-      document.getElementById('x').value = myData.account.x || '';
+      this.name.value = myData.account.name || '';
+      this.email.value = myData.account.email || '';
+      this.phone.value = myData.account.phone || '';
+      this.linkedin.value = myData.account.linkedin || '';
+      this.x.value = myData.account.x || '';
     }
   }
 
@@ -6647,15 +5441,15 @@ class MyProfileModal {
 
   async handleSubmit(event) {
     event.preventDefault();
-    const formData = {
-      name: document.getElementById('name').value,
-      email: document.getElementById('email').value,
-      phone: document.getElementById('phone').value,
-      linkedin: document.getElementById('linkedin').value,
-      x: document.getElementById('x').value,
-    };
 
-    // TODO massage the inputs and check for correct formats; for now assume it is all good
+    // Get and sanitize form data
+    const formData = {
+      name: this.name.value.trim(),
+      email: this.email.value.trim(),
+      phone: this.phone.value.trim(),
+      linkedin: this.linkedin.value.trim(),
+      x: this.x.value.trim(),
+    };
 
     // Save to myData.account
     myData.account = { ...myData.account, ...formData };
@@ -6677,7 +5471,9 @@ class MyProfileModal {
 const myProfileModal = new MyProfileModal();
 
 class ValidatorStakingModal {
-  constructor() {
+  constructor() {}
+
+  load() {
     // Modal and main buttons
     this.modal = document.getElementById('validatorModal');
     this.stakeButton = document.getElementById('openStakeModal');
@@ -6708,15 +5504,9 @@ class ValidatorStakingModal {
     this.marketPriceValue = document.getElementById('validator-market-price');
     this.marketStakeUsdValue = document.getElementById('validator-market-stake-usd');
     this.stakeForm = document.getElementById('stakeForm');
-  }
 
-  load() {
-    // Setup event listeners when DOM is loaded
-    // stakeButton handling is in the StakeValidatorModal
+
     this.unstakeButton.addEventListener('click', () => this.handleUnstake());
-
-    // Add listeners for opening and closing the modal
-    document.getElementById('openValidator').addEventListener('click', () => this.open());
     this.backButton.addEventListener('click', () => this.close());
   }
 
@@ -6748,18 +5538,14 @@ class ValidatorStakingModal {
 
     let currentPendingTx = null;
     if (myData && myData.pending && Array.isArray(myData.pending) && myData.pending.length > 0) {
-      currentPendingTx = myData.pending.find(
-        (tx) => tx.type === 'deposit_stake' || tx.type === 'withdraw_stake'
-      );
+      currentPendingTx = myData.pending.find((tx) => tx.type === 'deposit_stake' || tx.type === 'withdraw_stake');
     }
 
     if (currentPendingTx) {
       this.detailsElement.style.display = 'block';
       this.pendingSkeletonBar.style.display = 'flex';
       this.pendingTxTextInBar.textContent =
-        currentPendingTx.type === 'withdraw_stake'
-          ? 'Pending Unstake Transaction'
-          : 'Pending Stake Transaction';
+        currentPendingTx.type === 'withdraw_stake' ? 'Pending Unstake Transaction' : 'Pending Stake Transaction';
       this.pendingTxTextInBar.style.display = 'block';
 
       if (currentPendingTx.type === 'deposit_stake') {
@@ -6781,7 +5567,7 @@ class ValidatorStakingModal {
       const [userAccountData, networkAccountData] = await Promise.all([
         userAddress ? queryNetwork(`/account/${longAddress(userAddress)}`) : Promise.resolve(null), // Fetch User Data if available
         queryNetwork('/account/0000000000000000000000000000000000000000000000000000000000000000'), // Fetch Network Data
-        updateWalletBalances(),
+        walletScreen.updateWalletBalances(),
       ]);
 
       // Extract Raw Data (API values are now actual BigInt objects or other types)
@@ -6796,11 +5582,7 @@ class ValidatorStakingModal {
 
       // Calculate Derived Values
       let stabilityFactor = null;
-      if (
-        stabilityScaleMul != null &&
-        stabilityScaleDiv != null &&
-        Number(stabilityScaleDiv) !== 0
-      ) {
+      if (stabilityScaleMul != null && stabilityScaleDiv != null && Number(stabilityScaleDiv) !== 0) {
         stabilityFactor = Number(stabilityScaleMul) / Number(stabilityScaleDiv);
       }
 
@@ -6834,11 +5616,7 @@ class ValidatorStakingModal {
       let userStakedUsd = null; // number or null
       // TODO: Calculate User Staked Amount (USD) using market price - Use stability factor if available?
       // For now, using market price as implemented previously.
-      if (
-        userStakedBaseUnits != null &&
-        typeof userStakedBaseUnits === 'bigint' &&
-        marketPrice != null
-      ) {
+      if (userStakedBaseUnits != null && typeof userStakedBaseUnits === 'bigint' && marketPrice != null) {
         // Check it's a BigInt
         try {
           // userStakedBaseUnits is already a BigInt object
@@ -6872,12 +5650,10 @@ class ValidatorStakingModal {
       // Format & Update UI
 
       // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation to big2str.
-      this.stakeForm.dataset.minStake =
-        stakeAmountLibBaseUnits === null ? '0' : big2str(stakeAmountLibBaseUnits, 18);
+      this.stakeForm.dataset.minStake = stakeAmountLibBaseUnits === null ? '0' : big2str(stakeAmountLibBaseUnits, 18);
 
       // stakeRequiredUsd is a BigInt object or null/undefined. Pass its string representation.
-      const displayNetworkStakeUsd =
-        stakeRequiredUsd != null ? '$' + big2str(stakeRequiredUsd, 18).slice(0, 6) : 'N/A';
+      const displayNetworkStakeUsd = stakeRequiredUsd != null ? '$' + big2str(stakeRequiredUsd, 18).slice(0, 6) : 'N/A';
       // stakeAmountLibBaseUnits is a BigInt object or null. Pass its string representation.
       const displayNetworkStakeLib =
         stakeAmountLibBaseUnits !== null ? big2str(stakeAmountLibBaseUnits, 18).slice(0, 7) : 'N/A';
@@ -6885,9 +5661,7 @@ class ValidatorStakingModal {
       const displayMarketPrice = marketPrice ? '$' + marketPrice.toFixed(6) : 'N/A';
       // marketStakeUsdBaseUnits is a BigInt object or null. Pass its string representation.
       const displayMarketStakeUsd =
-        marketStakeUsdBaseUnits !== null
-          ? '$' + big2str(marketStakeUsdBaseUnits, 18).slice(0, 6)
-          : 'N/A';
+        marketStakeUsdBaseUnits !== null ? '$' + big2str(marketStakeUsdBaseUnits, 18).slice(0, 6) : 'N/A';
 
       this.networkStakeUsdValue.textContent = displayNetworkStakeUsd;
       this.networkStakeLibValue.textContent = displayNetworkStakeLib;
@@ -6904,8 +5678,7 @@ class ValidatorStakingModal {
         // Case: Nominee Exists
 
         // userStakedBaseUnits is a BigInt object or null/undefined. Pass its string representation.
-        const displayUserStakedLib =
-          userStakedBaseUnits != null ? big2str(userStakedBaseUnits, 18).slice(0, 6) : 'N/A';
+        const displayUserStakedLib = userStakedBaseUnits != null ? big2str(userStakedBaseUnits, 18).slice(0, 6) : 'N/A';
         const displayUserStakedUsd = userStakedUsd != null ? '$' + userStakedUsd.toFixed(6) : 'N/A';
 
         this.nomineeLabelElement.textContent = 'Nominated Validator:';
@@ -6952,9 +5725,7 @@ class ValidatorStakingModal {
     if (!nominee || nominee.length < 10) {
       // Add a basic sanity check for length
       showToast('Could not find nominated validator.', 4000, 'error');
-      console.warn(
-        'ValidatorStakingModal: Nominee not found or invalid in DOM element #validator-nominee.'
-      );
+      console.warn('ValidatorStakingModal: Nominee not found or invalid in DOM element #validator-nominee.');
       return;
     }
 
@@ -7023,6 +5794,7 @@ class ValidatorStakingModal {
       nominee: nodeAddress,
       force: false,
       timestamp: getCorrectedTimestamp(),
+      netid: network.netid,
     };
 
     const txid = await signObj(unstakeTx, myAccount.keys);
@@ -7046,25 +5818,34 @@ class ValidatorStakingModal {
           (!account.rewardEndTime || account.rewardEndTime === 0);
         return { isActive: isActive, error: null };
       } else {
-        console.warn(
-          `ValidatorStakingModal: No account data found for validator ${validatorAddress}.`
-        );
+        console.warn(`ValidatorStakingModal: No account data found for validator ${validatorAddress}.`);
         return { isActive: false, error: 'Could not fetch validator data' };
       }
     } catch (error) {
-      console.error(
-        `ValidatorStakingModal: Error fetching data for validator ${validatorAddress}:`,
-        error
-      );
+      console.error(`ValidatorStakingModal: Error fetching data for validator ${validatorAddress}:`, error);
       // Network error or other issue fetching data.
       return { isActive: false, error: 'Network error fetching validator status' };
     }
+  }
+
+  /**
+   * Check if the validator staking modal is active
+   * @returns {boolean}
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
   }
 }
 const validatorStakingModal = new ValidatorStakingModal();
 
 class StakeValidatorModal {
   constructor() {
+    this.stakedAmount = 0n;
+    this.lastValidationTimestamp = 0;
+    this.hasNominee = false;
+  }
+
+  load() {
     this.modal = document.getElementById('stakeModal');
     this.form = document.getElementById('stakeForm');
     this.nodeAddressInput = document.getElementById('stakeNodeAddress');
@@ -7075,13 +5856,10 @@ class StakeValidatorModal {
     this.balanceDisplay = document.getElementById('stakeAvailableBalanceDisplay');
     this.amountWarning = document.getElementById('stakeAmountWarning');
     this.nodeAddressWarning = document.getElementById('stakeNodeAddressWarning');
+    this.scanStakeQRButton = document.getElementById('scanStakeQRButton');
+    this.uploadStakeQRButton = document.getElementById('uploadStakeQRButton');
+    this.stakeQRFileInput = document.getElementById('stakeQrFileInput');
 
-    this.stakedAmount = 0n;
-    this.lastValidationTimestamp = 0;
-    this.hasNominee = false;
-  }
-
-  load() {
     // Setup event listeners
     this.form.addEventListener('submit', (event) => this.handleSubmit(event));
     this.backButton.addEventListener('click', () => this.close());
@@ -7089,7 +5867,11 @@ class StakeValidatorModal {
     this.debouncedValidateStakeInputs = debounce(() => this.validateStakeInputs(), 300);
 
     this.nodeAddressInput.addEventListener('input', this.debouncedValidateStakeInputs);
+    this.amountInput.addEventListener('input', () => this.amountInput.value = normalizeUnsignedFloat(this.amountInput.value));
     this.amountInput.addEventListener('input', this.debouncedValidateStakeInputs);
+    this.scanStakeQRButton.addEventListener('click', () => scanQRModal.open());
+    this.uploadStakeQRButton.addEventListener('click', () => this.stakeQRFileInput.click());
+    this.stakeQRFileInput.addEventListener('change', (event) => sendAssetFormModal.handleQRFileSelect(event, this));
 
     // Add listener for opening the modal
     document.getElementById('openStakeModal').addEventListener('click', () => this.open());
@@ -7099,7 +5881,7 @@ class StakeValidatorModal {
     this.modal.classList.add('active');
 
     // Set the correct fill function for the staking context
-    openQRScanModal.fill = fillStakeAddressFromQR;
+    scanQRModal.fillFunction = this.fillFromQR.bind(this);
 
     // Display Available Balance
     const libAsset = myData.wallet.assets.find((asset) => asset.symbol === 'LIB');
@@ -7198,6 +5980,7 @@ class StakeValidatorModal {
       nominee: nodeAddress,
       stake: amount,
       timestamp: getCorrectedTimestamp(),
+      netid: network.netid,
     };
 
     const txid = await signObj(stakeTx, keys);
@@ -7225,8 +6008,7 @@ class StakeValidatorModal {
     // Check 1.5: Node Address Format (64 hex chars)
     const addressRegex = /^[0-9a-fA-F]{64}$/;
     if (!addressRegex.test(nodeAddress)) {
-      this.nodeAddressWarning.textContent =
-        'Invalid node address format (must be 64 hex characters).';
+      this.nodeAddressWarning.textContent = 'Invalid node address format (must be 64 hex characters).';
       this.nodeAddressWarning.style.display = 'block';
       this.amountWarning.style.display = 'none';
       this.amountWarning.textContent = '';
@@ -7297,23 +6079,46 @@ class StakeValidatorModal {
     this.amountWarning.style.display = 'none';
     this.nodeAddressWarning.style.display = 'none';
   }
+
+  /**
+   * Fills the stake address input field from QR data
+   * @param {string} data - The QR data to fill the stake address input field
+   * @returns {void}
+   * */
+  fillFromQR(data) {
+    console.log('Filling stake address from QR data:', data);
+
+    // Directly set the value of the stakeNodeAddress input field
+    if (this.nodeAddressInput) {
+      this.nodeAddressInput.value = data;
+      this.nodeAddressInput.dispatchEvent(new Event('input'));
+    } else {
+      console.error('Stake node address input field not found!');
+      showToast('Could not find stake address field.', 3000, 'error');
+    }
+  }
+
+  /**
+   * Resets the form to its default state
+   * @returns {void}
+   * */
+  resetForm() {
+    // Default state: button disabled, warnings hidden
+    this.nodeAddressInput.value = '';    
+    this.submitButton.disabled = true;
+    this.amountWarning.style.display = 'none';
+    this.amountWarning.textContent = '';
+    this.nodeAddressWarning.style.display = 'none';
+    this.nodeAddressWarning.textContent = '';
+  }
 }
 const stakeValidatorModal = new StakeValidatorModal();
 
 class ChatModal {
   constructor() {
-    this.modal = document.getElementById('chatModal');
-    this.closeButton = document.getElementById('closeChatModal');
-    this.messagesList = document.querySelector('.messages-list');
-    this.sendButton = document.getElementById('handleSendMessage');
-    this.modalAvatar = this.modal.querySelector('.modal-avatar');
-    this.modalTitle = this.modal.querySelector('.modal-title');
-    this.editButton = document.getElementById('chatEditButton');
-    this.sendMoneyButton = document.getElementById('chatSendMoneyButton');
-    this.retryOfTxId = document.getElementById('retryOfTxId');
-    this.messageInput = document.querySelector('.message-input');
     this.newestReceivedMessage = null;
     this.newestSentMessage = null;
+    this.lastMessageCount = 0;
 
     // used by updateTollValue and updateTollRequired
     this.toll = null;
@@ -7326,6 +6131,21 @@ class ChatModal {
    * @returns {void}
    */
   load() {
+    this.modal = document.getElementById('chatModal');
+    this.closeButton = document.getElementById('closeChatModal');
+    this.messagesList = document.querySelector('.messages-list');
+    this.sendButton = document.getElementById('handleSendMessage');
+    this.modalAvatar = this.modal.querySelector('.modal-avatar');
+    this.modalTitle = this.modal.querySelector('.modal-title');
+    this.editButton = document.getElementById('chatEditButton');
+    this.sendMoneyButton = document.getElementById('chatSendMoneyButton');
+    this.retryOfTxId = document.getElementById('retryOfTxId');
+    this.messageInput = document.querySelector('.message-input');
+    this.chatSendMoneyButton = document.getElementById('chatSendMoneyButton');
+    this.messageByteCounter = document.querySelector('.message-byte-counter');
+    this.messagesContainer = document.querySelector('.messages-container');
+    this.addFriendButtonChat = document.getElementById('addFriendButtonChat');
+
     // Add message click-to-copy handler
     this.messagesList.addEventListener('click', this.handleClickToCopy.bind(this));
     this.sendButton.addEventListener('click', this.handleSendMessage.bind(this));
@@ -7342,48 +6162,59 @@ class ChatModal {
       this.messageInput.style.height = '48px';
       this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 120) + 'px';
 
+      const messageText = e.target.value;
+      const messageValidation = this.validateMessageSize(messageText);
+      this.updateMessageByteCounter(messageValidation);
+
       // Save draft (text is already limited to 2000 chars by maxlength attribute)
       this.debouncedSaveDraft(e.target.value);
     });
 
     // Add focus event listener for message input to handle scrolling
     this.messageInput.addEventListener('focus', function () {
-      const messagesContainer = document.querySelector('.messages-container');
-      if (messagesContainer) {
+      if (this.messagesContainer) {
         // Check if we're already at the bottom (within 50px threshold)
         const isAtBottom =
-          messagesContainer.scrollHeight -
-            messagesContainer.scrollTop -
-            messagesContainer.clientHeight <=
-          50;
+          this.messagesContainer.scrollHeight - this.messagesContainer.scrollTop - this.messagesContainer.clientHeight <= 50;
         if (isAtBottom) {
           // Wait for keyboard to appear and viewport to adjust
           setTimeout(() => {
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
           }, 300); // Increased delay to ensure keyboard is fully shown
         }
       }
+    });
+
+    this.chatSendMoneyButton.addEventListener('click', () => {
+      sendAssetFormModal.username = this.chatSendMoneyButton.dataset.username;
+      sendAssetFormModal.open();
+    });
+
+    this.addFriendButtonChat.addEventListener('click', () => {
+      if (!friendModal.getCurrentContactAddress()) return;
+      friendModal.open();
     });
   }
 
   /**
    * Opens the chat modal for the given address.
    * @param {string} address - The address of the contact to open the chat modal for.
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async open(address) {
+    // clear message input
+    this.messageInput.value = '';
+    this.messageInput.style.height = '48px';
+    this.messageByteCounter.style.display = 'none';
+
     friendModal.setAddress(address);
-    document.getElementById('newChatButton').classList.remove('visible');
+    footer.newChatButton.classList.remove('visible');
     const contact = myData.contacts[address];
     friendModal.updateFriendButton(contact, 'addFriendButtonChat');
     // Set user info
-    this.modalTitle.textContent =
-      contact.name ||
-      contact.senderInfo?.name ||
-      contact.username ||
-      `${contact.address.slice(0, 8)}...${contact.address.slice(-6)}`;
+    this.modalTitle.textContent = getContactDisplayName(contact);
 
-    updateWalletBalances();
+    walletScreen.updateWalletBalances();
 
     // update the toll value. Will not await this and it'll update the toll value while the modal is open.
     updateTollValue(address);
@@ -7440,7 +6271,7 @@ class ChatModal {
     if (contact.unread > 0) {
       myData.state.unread = Math.max(0, (myData.state.unread || 0) - contact.unread);
       contact.unread = 0;
-      updateChatList();
+      chatsScreen.updateChatList();
     }
 
     // Setup state for appendChatModal and perform initial render
@@ -7452,6 +6283,14 @@ class ChatModal {
         pollChatInterval(pollIntervalChatting); // poll for messages at a faster rate
       }
     }
+  }
+
+  /**
+   * Check if chatModal is active
+   * @returns {boolean} - True if modal is open, false otherwise
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
   }
 
   /**
@@ -7468,14 +6307,17 @@ class ChatModal {
 
     this.sendReclaimTollTransaction(this.address);
 
+    // Save any unsaved draft before closing
+    this.debouncedSaveDraft(this.messageInput.value);
+
     this.modal.classList.remove('active');
-    if (document.getElementById('chatsScreen').classList.contains('active')) {
-      updateChatList();
-      document.getElementById('newChatButton').classList.add('visible');
+    if (chatsScreen.isActive()) {
+      chatsScreen.updateChatList();
+      footer.newChatButton.classList.add('visible');
     }
-    if (document.getElementById('contactsScreen').classList.contains('active')) {
-      updateContactsList();
-      document.getElementById('newChatButton').classList.add('visible');
+    if (contactsScreen.isActive()) {
+      contactsScreen.updateContactsList();
+      footer.newChatButton.classList.add('visible');
     }
     this.address = null;
     if (isOnline) {
@@ -7532,16 +6374,13 @@ class ChatModal {
    */
   async sendReclaimTollTransaction(contactAddress) {
     console.log(`[sendReclaimTollTransaction] entering function`);
-    const sevenDaysAgo = getCorrectedTimestamp() - 7 * 24 * 60 * 60 * 1000;
-    console.log(`this.newestSentMessage: ${!!this.newestSentMessage}`);
-    console.log(`this.newestSentMessage?.timestamp: ${this.newestSentMessage?.timestamp}`);
-    console.log(`sevenDaysAgo: ${sevenDaysAgo}`);
-    console.log(
-      `this.newestSentMessage?.timestamp > sevenDaysAgo: ${this.newestSentMessage?.timestamp < sevenDaysAgo}`
-    );
-    if (!this.newestSentMessage || this.newestSentMessage?.timestamp > sevenDaysAgo) {
+    await getNetworkParams();
+    const currentTime = getCorrectedTimestamp();
+    const networkTollTimeoutInMs = parameters.current.tollTimeout; 
+    const timeSinceNewestSentMessage = currentTime - this.newestSentMessage?.timestamp;
+    if (!this.newestSentMessage || timeSinceNewestSentMessage < networkTollTimeoutInMs) {
       console.log(
-        `[sendReclaimTollTransaction] newestSentMessage is null or timestamp is less than 7 days ago, skipping reclaim toll transaction`
+        `[sendReclaimTollTransaction] timeSinceNewestSentMessage ${timeSinceNewestSentMessage}ms is less than networkTollTimeoutInMs ${networkTollTimeoutInMs}ms, skipping reclaim toll transaction`
       );
       return;
     }
@@ -7557,10 +6396,9 @@ class ChatModal {
       type: 'reclaim_toll',
       from: longAddress(myData.account.keys.address),
       to: longAddress(contactAddress),
-      chatId: hashBytes(
-        [longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``
-      ),
+      chatId: hashBytes([longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``),
       timestamp: getCorrectedTimestamp(),
+      netid: network.netid,
     };
     const txid = await signObj(tx, myAccount.keys);
     const response = await injectTx(tx, txid);
@@ -7578,10 +6416,7 @@ class ChatModal {
    */
   async canSenderReclaimToll(contactAddress) {
     // keep track receiver index during the sort
-    const sortedAddresses = [
-      longAddress(myData.account.keys.address),
-      longAddress(contactAddress),
-    ].sort();
+    const sortedAddresses = [longAddress(myData.account.keys.address), longAddress(contactAddress)].sort();
     const receiverIndex = sortedAddresses.indexOf(longAddress(contactAddress));
     const chatId = hashBytes(sortedAddresses.join``);
     const chatIdAccount = await queryNetwork(`/messages/${chatId}/toll`);
@@ -7632,11 +6467,10 @@ class ChatModal {
       type: 'read',
       from: longAddress(myData.account.keys.address),
       to: longAddress(contactAddress),
-      chatId: hashBytes(
-        [longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``
-      ),
+      chatId: hashBytes([longAddress(myData.account.keys.address), longAddress(contactAddress)].sort().join``),
       timestamp: getCorrectedTimestamp(),
       oldContactTimestamp: myData.contacts[contactAddress].timestamp,
+      netid: network.netid,
     };
     return readTransaction;
   }
@@ -7665,7 +6499,8 @@ class ChatModal {
         return;
       }
 
-      const sufficientBalance = await validateBalance(this.toll);
+      const amount = this.tollRequiredToSend ? this.toll : 0n;
+      const sufficientBalance = await validateBalance(amount);
       if (!sufficientBalance) {
         showToast('Insufficient balance for toll and fee', 0, 'error');
         this.sendButton.disabled = false;
@@ -7692,7 +6527,7 @@ class ChatModal {
       // Get sender's keys from wallet
       const keys = myAccount.keys;
       if (!keys) {
-        alert('Keys not found for sender address');
+        showToast('Keys not found for sender address', 0, 'error');
         return;
       }
 
@@ -7741,7 +6576,7 @@ class ChatModal {
       };
 
       // Add additional info only if recipient is a friend
-      if (contact && contact.friend) {
+      if (contact && contact?.friend && contact?.friend >= 3) {
         // Add more personal details for friends
         senderInfo.name = myData.account.name;
         senderInfo.email = myData.account.email;
@@ -7756,9 +6591,10 @@ class ChatModal {
       // can create a function to query the account and get the receivers toll they've set
       // TODO: will need to query network and receiver account where we validate
       // TODO: decided to query everytime we do chatModal.open and save as global variable. We don't need to clear it but we can clear it when closing the modal but should get reset when opening the modal again anyway
-      const toll = this.toll;
+      let tollInLib =
+        myData.contacts[currentAddress].tollRequiredToSend == 0 ? 0n : this.toll
 
-      const chatMessageObj = await this.createChatMessage(currentAddress, payload, toll, keys);
+      const chatMessageObj = await this.createChatMessage(currentAddress, payload, tollInLib, keys);
       const txid = await signObj(chatMessageObj, keys);
 
       // if there a hidden txid input, get the value to be used to delete that txid from relevant data stores
@@ -7790,9 +6626,7 @@ class ChatModal {
       };
 
       // Remove existing chat for this contact if it exists. Not handling in removeFailedTx anymore.
-      const existingChatIndex = chatsData.chats.findIndex(
-        (chat) => chat.address === currentAddress
-      );
+      const existingChatIndex = chatsData.chats.findIndex((chat) => chat.address === currentAddress);
       if (existingChatIndex !== -1) {
         chatsData.chats.splice(existingChatIndex, 1);
       }
@@ -7802,6 +6636,12 @@ class ChatModal {
       // Clear input and reset height, and delete any saved draft
       this.messageInput.value = '';
       this.messageInput.style.height = '48px'; // original height
+
+      // Hide byte counter
+      this.messageByteCounter.style.display = 'none'; 
+
+      // Call debounced save directly with empty string
+      this.debouncedSaveDraft('');
       contact.draft = '';
 
       // Update the chat modal UI immediately
@@ -7817,6 +6657,12 @@ class ChatModal {
 
       if (!response || !response.result || !response.result.success) {
         console.log('message failed to send', response);
+        const str = response.result.reason;
+        const regex = /toll/i;
+  
+        if (str.match(regex)) {
+          await this.reopen();
+        }
         //let userMessage = 'Message failed to send. Please try again.';
         //const reason = response.result?.reason || '';
 
@@ -7843,7 +6689,7 @@ class ChatModal {
       }
     } catch (error) {
       console.error('Message error:', error);
-      alert('Failed to send message. Please try again.');
+      showToast('Failed to send message. Please try again.', 0, 'error');
     } finally {
       this.sendButton.disabled = false; // Re-enable the button
     }
@@ -7857,7 +6703,7 @@ class ChatModal {
    * @param {Object} keys - The keys of the sender
    * @returns {Object} The chat message object
    */
-  async createChatMessage(to, payload, toll, keys) {
+  async createChatMessage(to, payload, tollInLib, keys) {
     const toAddr = longAddress(to);
     const fromAddr = longAddress(keys.address);
     await getNetworkParams();
@@ -7865,13 +6711,14 @@ class ChatModal {
       type: 'message',
       from: fromAddr,
       to: toAddr,
-      amount: toll, // not sure if this is used by the backend
+      amount: tollInLib,
       chatId: hashBytes([fromAddr, toAddr].sort().join``),
       message: 'x',
       xmessage: payload,
       timestamp: getCorrectedTimestamp(),
       network: NETWORK_ACCOUNT_ID,
       fee: parameters.current.transactionFee || 1n * wei, // This is not used by the backend
+      netid: network.netid,
     };
     return tx;
   }
@@ -7883,12 +6730,7 @@ class ChatModal {
    */
   appendChatModal(highlightNewMessage = false) {
     const currentAddress = this.address; // Use a local constant
-    console.log(
-      'appendChatModal running for address:',
-      currentAddress,
-      'Highlight:',
-      highlightNewMessage
-    );
+    console.log('appendChatModal running for address:', currentAddress, 'Highlight:', highlightNewMessage);
     if (!currentAddress) {
       return;
     }
@@ -7985,9 +6827,19 @@ class ChatModal {
         );
 
         if (newestReceivedElementDOM) {
-          // Found the element, scroll to and highlight it
-          newestReceivedElementDOM.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
+          // Focus the modal first
+          this.modal.focus();
+          
+          if (messageContainer) {
+            // Calculate the scroll position manually
+            const elementTop = newestReceivedElementDOM.offsetTop;
+            const containerHeight = messageContainer.clientHeight;
+            const scrollTop = elementTop - (containerHeight / 2); // Center the element
+            
+            // Scroll to the calculated position
+            messageContainer.scrollTop = scrollTop;
+          }
+          
           // Apply highlight immediately
           newestReceivedElementDOM.classList.add('highlighted');
 
@@ -8025,6 +6877,11 @@ class ChatModal {
    * @returns {void}
    */
   async handleClickToCopy(e) {
+    // Check if the click was on a link - if so, don't copy
+    if (e.target.tagName === 'A' || e.target.closest('a')) {
+      return;
+    }
+    
     const messageEl = e.target.closest('.message');
     if (!messageEl) return;
 
@@ -8039,7 +6896,7 @@ class ChatModal {
 
       // If the message is a payment message, show the failed history item modal
       if (messageEl.classList.contains('payment-info')) {
-        failedMessageModal.handleFailedPaymentClick(messageEl.dataset.txid, messageEl);
+        failedTransactionModal.open(messageEl.dataset.txid, messageEl);
       }
 
       // TODO: if message is a payment open sendAssetFormModal and fill with information in the payment message?
@@ -8098,26 +6955,22 @@ class ChatModal {
    */
   refreshCurrentView(txid) {
     // contactAddress is kept for potential future use but not needed for this txid-based logic
-    const chatsScreen = document.getElementById('chatsScreen');
-    const historyModal = document.getElementById('historyModal');
     const messagesList = this.modal ? this.messagesList : null;
 
     // 1. Refresh History Modal if active
-    if (historyModal && historyModal.classList.contains('active')) {
+    if (historyModal.isActive()) {
       console.log('DEBUG: Refreshing transaction history modal due to transaction failure.');
-      updateTransactionHistory();
+      historyModal.refresh();
     }
     // 2. Refresh Chat Modal if active AND the failed txid's message is currently rendered
-    if (this.modal && this.modal.classList.contains('active') && txid && messagesList) {
+    if (this.isActive() && txid && messagesList) {
       // Check if an element with the specific data-txid exists within the message list
       const messageElement = messagesList.querySelector(`[data-txid="${txid}"]`);
 
       if (messageElement) {
         // If the element exists, the failed message is visible in the open chat. Refresh the modal.
-        console.log(
-          `DEBUG: Refreshing active chat modal because failed txid ${txid} was found in the view.`
-        );
-        this.modal.appendChatModal(); // This will redraw the messages based on the updated data (where the failed tx is removed)
+        console.log(`DEBUG: Refreshing active chat modal because failed txid ${txid} was found in the view.`);
+        this.appendChatModal(); // This will redraw the messages based on the updated data (where the failed tx is removed)
       } else {
         // The failed txid doesn't correspond to a visible message in the *currently open* chat modal. No UI refresh needed for the modal itself.
         console.log(
@@ -8126,9 +6979,9 @@ class ChatModal {
       }
     }
     // 3. Refresh Chat List if active
-    if (chatsScreen && chatsScreen.classList.contains('active')) {
+    if (chatsScreen.isActive()) {
       console.log('DEBUG: Refreshing chat list view due to transaction failure.');
-      updateChatList();
+      chatsScreen.updateChatList();
     }
     // No other active view to refresh in this context
   }
@@ -8159,19 +7012,70 @@ class ChatModal {
       this.messageInput.value = contact.draft;
       // Trigger resize
       this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 120) + 'px';
+      // trigger input event to update the byte counter
+      this.messageInput.dispatchEvent(new Event('input'));
+    }
+  }
+
+  async reopen() {
+    const tempAddress = this.address;
+    this.close();
+    await this.open(tempAddress);
+  }
+
+  /**
+   * Validates the size of a message
+   * @param {string} text - The message text to validate
+   * @returns {Object} - An object containing the validation result
+   */
+  validateMessageSize(text) {
+    const maxBytes = MAX_CHAT_MESSAGE_BYTES;
+    const byteSize = new Blob([text]).size;
+    return {
+      isValid: byteSize <= maxBytes,
+      currentBytes: byteSize,
+      remainingBytes: maxBytes - byteSize,
+      percentage: (byteSize / maxBytes) * 100,
+      maxBytes: maxBytes
+    };
+  }
+  
+  /**
+   * Updates the message byte counter
+   * @param {Object} validation - The validation result
+   * @returns {void}
+   */
+  updateMessageByteCounter(validation) {
+    // Only show counter when at 90% or higher
+    if (validation.percentage >= 90) {
+      if (validation.percentage > 100) {
+        this.messageByteCounter.style.color = '#dc3545';
+        this.messageByteCounter.textContent = `${validation.currentBytes - validation.maxBytes} bytes - over limit`;
+        // disable send button
+        this.sendButton.disabled = true;
+      } else if (validation.percentage >= 90) {
+        this.messageByteCounter.style.color = '#ffa726';
+        this.messageByteCounter.textContent = `${validation.remainingBytes} bytes - left`;
+        this.sendButton.disabled = false;
+      }
+      this.messageByteCounter.style.display = 'block';
+    } else {
+      this.messageByteCounter.style.display = 'none';
+      this.sendButton.disabled = false;
     }
   }
 }
 
 const chatModal = new ChatModal();
 
+/**
+ * Failed Message Modal Class
+ * @class
+ * @description Handles the failed message modal
+ * @returns {void}
+ */
 class FailedMessageModal {
   constructor() {
-    this.modal = document.getElementById('failedMessageModal');
-    this.retryButton = this.modal.querySelector('.retry-button');
-    this.deleteButton = this.modal.querySelector('.delete-button');
-    this.closeButton = document.getElementById('closeFailedMessageModal');
-    // used by handleFailedMessageClick
     this.handleFailedMessageData = {
       handleFailedMessage: '',
       txid: '',
@@ -8183,12 +7087,14 @@ class FailedMessageModal {
    * @returns {void}
    */
   load() {
+    this.modal = document.getElementById('failedMessageModal');
+    this.retryButton = this.modal.querySelector('.retry-button');
+    this.deleteButton = this.modal.querySelector('.delete-button');
+    this.closeButton = document.getElementById('closeFailedMessageModal');
+
     this.retryButton.addEventListener('click', this.handleFailedMessageRetry.bind(this));
     this.deleteButton.addEventListener('click', this.handleFailedMessageDelete.bind(this));
-    this.closeButton.addEventListener(
-      'click',
-      this.closeFailedMessageModalAndClearState.bind(this)
-    );
+    this.closeButton.addEventListener('click', this.closeFailedMessageModalAndClearState.bind(this));
     this.modal.addEventListener('click', this.handleFailedMessageBackdropClick.bind(this));
   }
 
@@ -8232,19 +7138,11 @@ class FailedMessageModal {
       chatModal.messageInput.value = messageToRetry;
       chatModal.retryOfTxId.value = originalTxid;
 
-      if (this.modal) {
-        this.modal.classList.remove('active');
-      }
+      this.closeFailedMessageModalAndClearState();
       chatModal.messageInput.focus();
-
-      // Clear the stored values after use
-      this.handleFailedMessageData.handleFailedMessage = '';
-      this.handleFailedMessageData.txid = '';
     } else {
       console.error('Error preparing message retry: Necessary elements or data missing.');
-      if (this.modal) {
-        this.modal.classList.remove('active');
-      }
+      this.closeFailedMessageModalAndClearState();
     }
   }
 
@@ -8260,20 +7158,13 @@ class FailedMessageModal {
       const currentAddress = chatModal.address;
       removeFailedTx(originalTxid, currentAddress);
 
-      if (this.modal) {
-        this.modal.classList.remove('active');
-      }
+      this.closeFailedMessageModalAndClearState();
 
-      // Clear the stored values
-      this.handleFailedMessageData.handleFailedMessage = '';
-      this.handleFailedMessageData.txid = '';
       // refresh current chatModal
       chatModal.appendChatModal();
     } else {
       console.error('Error deleting message: TXID not found.');
-      if (this.modal) {
-        this.modal.classList.remove('active');
-      }
+      this.closeFailedMessageModalAndClearState();
     }
   }
 
@@ -8283,9 +7174,7 @@ class FailedMessageModal {
    * @returns {void}
    */
   closeFailedMessageModalAndClearState() {
-    if (this.modal) {
-      this.modal.classList.remove('active');
-    }
+    this.modal.classList.remove('active');
     // Clear the stored values when modal is closed
     this.handleFailedMessageData.handleFailedMessage = '';
     this.handleFailedMessageData.txid = '';
@@ -8306,16 +7195,14 @@ class FailedMessageModal {
 
 const failedMessageModal = new FailedMessageModal();
 
-// new chat modal
+/**
+ * New Chat Modal Class
+ * @class
+ * @description Handles the new chat modal
+ * @returns {void}
+ */
 class NewChatModal {
   constructor() {
-    this.modal = document.getElementById('newChatModal');
-    this.newChatButton = document.getElementById('newChatButton');
-    this.closeNewChatModalButton = document.getElementById('closeNewChatModal');
-    this.newChatForm = document.getElementById('newChatForm');
-    this.usernameAvailable = document.getElementById('chatRecipientError');
-    this.recipientInput = document.getElementById('chatRecipient');
-    this.submitButton = document.querySelector('#newChatForm button[type="submit"]');
     this.usernameInputCheckTimeout = null;
   }
 
@@ -8324,15 +7211,16 @@ class NewChatModal {
    * @returns {void}
    */
   load() {
-    this.newChatButton.addEventListener('click', this.openNewChatModal.bind(this));
+    this.modal = document.getElementById('newChatModal');
+    this.closeNewChatModalButton = document.getElementById('closeNewChatModal');
+    this.newChatForm = document.getElementById('newChatForm');
+    this.usernameAvailable = document.getElementById('chatRecipientError');
+    this.recipientInput = document.getElementById('chatRecipient');
+    this.submitButton = document.querySelector('#newChatForm button[type="submit"]');
+
     this.closeNewChatModalButton.addEventListener('click', this.closeNewChatModal.bind(this));
     this.newChatForm.addEventListener('submit', this.handleNewChat.bind(this));
-    this.recipientInput.addEventListener(
-      'input',
-      debounce(this.handleUsernameInput.bind(this), 300)
-    );
-    this.recipientInput.addEventListener('paste', handlePaste);
-    this.recipientInput.addEventListener('input', filterUsernameInput);
+    this.recipientInput.addEventListener('input', debounce(this.handleUsernameInput.bind(this), 300));
   }
 
   /**
@@ -8342,7 +7230,7 @@ class NewChatModal {
    */
   openNewChatModal() {
     this.modal.classList.add('active');
-    this.newChatButton.classList.remove('visible');
+    footer.newChatButton.classList.remove('visible');
     this.usernameAvailable.style.display = 'none';
     this.submitButton.disabled = true;
 
@@ -8365,11 +7253,11 @@ class NewChatModal {
   closeNewChatModal() {
     this.modal.classList.remove('active');
     this.newChatForm.reset();
-    if (document.getElementById('chatsScreen').classList.contains('active')) {
-      this.newChatButton.classList.add('visible');
+    if (chatsScreen.isActive()) {
+      footer.newChatButton.classList.add('visible');
     }
-    if (document.getElementById('contactsScreen').classList.contains('active')) {
-      this.newChatButton.classList.add('visible');
+    if (contactsScreen.isActive()) {
+      footer.newChatButton.classList.add('visible');
     }
   }
 
@@ -8425,6 +7313,8 @@ class NewChatModal {
     // Check if contact exists
     if (!chatsData.contacts[recipientAddress]) {
       createNewContact(recipientAddress, username, 2);
+      // default to 2 (Acquaintance) so recipient does not need to pay toll
+      friendModal.postUpdateTollRequired(recipientAddress, 2);
     }
     chatsData.contacts[recipientAddress].username = username;
 
@@ -8463,6 +7353,7 @@ class NewChatModal {
     this.submitButton.disabled = true;
 
     const username = normalizeUsername(e.target.value);
+    e.target.value = username;
 
     // Clear previous timeout
     if (this.usernameInputCheckTimeout) {
@@ -8502,25 +7393,378 @@ class NewChatModal {
 
 const newChatModal = new NewChatModal();
 
-// Send Asset Form Modal
+// Create Account Modal
+class CreateAccountModal {
+  constructor() {
+    this.checkTimeout = null;
+  }
+
+  load() {
+    this.modal = document.getElementById('createAccountModal');
+    this.form = document.getElementById('createAccountForm');
+    this.usernameInput = document.getElementById('newUsername');
+    this.privateKeyInput = document.getElementById('newPrivateKey');
+    this.privateKeySection = document.getElementById('privateKeySection');
+    this.toggleButton = document.getElementById('togglePrivateKeyInput');
+    this.backButton = document.getElementById('closeCreateAccountModal');
+    this.submitButton = this.form.querySelector('button[type="submit"]');
+    this.usernameAvailable = document.getElementById('newUsernameAvailable');
+    this.privateKeyError = document.getElementById('newPrivateKeyError');
+    this.togglePrivateKeyVisibility = document.getElementById('togglePrivateKeyVisibility');
+
+    // Setup event listeners
+    this.form.addEventListener('submit', (e) => this.handleSubmit(e));
+    this.usernameInput.addEventListener('input', (e) => this.handleUsernameInput(e));
+    this.toggleButton.addEventListener('change', () => this.handleTogglePrivateKeyInput());
+    this.backButton.addEventListener('click', () => this.close());
+
+    // Add listener for the password visibility toggle
+    this.togglePrivateKeyVisibility.addEventListener('click', () => {
+      // Toggle the type attribute
+      const type = this.privateKeyInput.getAttribute('type') === 'password' ? 'text' : 'password';
+      this.privateKeyInput.setAttribute('type', type);
+      // Toggle the visual state class on the button
+      this.togglePrivateKeyVisibility.classList.toggle('toggled-visible');
+    });
+  }
+
+  open() {
+    this.modal.classList.add('active');
+    enterFullscreen();
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+  }
+
+  openWithReset() {
+    // Clear form fields
+    this.usernameInput.value = '';
+    this.privateKeyInput.value = '';
+    this.usernameAvailable.style.display = 'none';
+    this.privateKeyError.style.display = 'none';
+    
+    // Open the modal
+    this.open();
+  }
+
+  /**
+   * Check if the create account modal is active
+   * @returns {boolean}
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
+  }
+
+  handleUsernameInput(e) {
+    const username = normalizeUsername(e.target.value);
+    e.target.value = username;
+
+    // Clear previous timeout
+    if (this.checkTimeout) {
+      clearTimeout(this.checkTimeout);
+    }
+
+    // Reset display
+    this.usernameAvailable.style.display = 'none';
+    this.submitButton.disabled = true;
+
+    // Check if username is too short
+    if (username.length < 3) {
+      this.usernameAvailable.textContent = 'too short';
+      this.usernameAvailable.style.color = '#dc3545';
+      this.usernameAvailable.style.display = 'inline';
+      return;
+    }
+
+    // Check network availability
+    this.checkTimeout = setTimeout(async () => {
+      const taken = await checkUsernameAvailability(username);
+      if (taken == 'taken') {
+        this.usernameAvailable.textContent = 'taken';
+        this.usernameAvailable.style.color = '#dc3545';
+        this.usernameAvailable.style.display = 'inline';
+        this.submitButton.disabled = true;
+      } else if (taken == 'available') {
+        this.usernameAvailable.textContent = 'available';
+        this.usernameAvailable.style.color = '#28a745';
+        this.usernameAvailable.style.display = 'inline';
+        this.submitButton.disabled = false;
+      } else {
+        this.usernameAvailable.textContent = 'network error';
+        this.usernameAvailable.style.color = '#dc3545';
+        this.usernameAvailable.style.display = 'inline';
+        this.submitButton.disabled = true;
+      }
+    }, 1000);
+  }
+
+  handleTogglePrivateKeyInput() {
+    const isChecked = this.toggleButton.checked;
+    this.privateKeySection.style.display = isChecked ? 'block' : 'none';
+    this.privateKeyInput.value = '';
+    
+    if (!isChecked) {
+      this.privateKeyError.style.display = 'none';
+    }
+  }
+
+  validatePrivateKey(key) {
+    // Trim whitespace
+    key = key.trim();
+
+    // Remove 0x prefix if present
+    if (key.startsWith('0x')) {
+      key = key.slice(2);
+    }
+
+    // Convert to lowercase
+    key = key.toLowerCase();
+
+    // Validate hex characters
+    const hexRegex = /^[0-9a-f]*$/;
+    if (!hexRegex.test(key)) {
+      return {
+        valid: false,
+        message: 'Invalid characters - only 0-9 and a-f allowed',
+      };
+    }
+
+    // Validate length (64 chars for 32 bytes)
+    if (key.length !== 64) {
+      return {
+        valid: false,
+        message: 'Invalid length - must be 64 hex characters',
+      };
+    }
+
+    return {
+      valid: true,
+      key: key,
+    };
+  }
+
+  async handleSubmit(event) {
+    // Disable submit button
+    this.submitButton.disabled = true;
+    // Disable input fields, back button, and toggle button
+    this.toggleButton.disabled = true;
+    this.usernameInput.disabled = true;
+    this.privateKeyInput.disabled = true;
+    this.backButton.disabled = true;
+
+    event.preventDefault();
+    const username = normalizeUsername(this.usernameInput.value);
+
+    // Get network ID from network.js
+    const { netid } = network;
+
+    // Get existing accounts or create new structure
+    const existingAccounts = parse(localStorage.getItem('accounts') || '{"netids":{}}');
+
+    // Ensure netid and usernames objects exist
+    if (!existingAccounts.netids[netid]) {
+      existingAccounts.netids[netid] = { usernames: {} };
+    }
+
+    // Get private key from input or generate new one
+    const providedPrivateKey = this.privateKeyInput.value;
+    let privateKey, privateKeyHex;
+
+    if (providedPrivateKey) {
+      // Validate and normalize private key
+      const validation = this.validatePrivateKey(providedPrivateKey);
+      if (!validation.valid) {
+        this.privateKeyError.textContent = validation.message;
+        this.privateKeyError.style.color = '#dc3545';
+        this.privateKeyError.style.display = 'inline';
+        // Re-enable controls on validation failure
+        this.reEnableControls();
+        return;
+      }
+
+      privateKey = hex2bin(validation.key);
+      privateKeyHex = validation.key;
+      this.privateKeyError.style.display = 'none';
+    } else {
+      privateKey = generateRandomPrivateKey();
+      privateKeyHex = bin2hex(privateKey);
+      this.privateKeyError.style.display = 'none'; // Ensure hidden if generated
+    }
+
+    // Generate uncompressed public key
+    const publicKey = getPublicKey(privateKey);
+    const publicKeyHex = bin2hex(publicKey);
+    const pqSeed = bin2hex(generateRandomBytes(64));
+
+    // Generate address from public key
+    const address = generateAddress(publicKey);
+    const addressHex = bin2hex(address);
+
+    // If a private key was provided, check if the derived address already exists on the network
+    if (providedPrivateKey) {
+      try {
+        const accountCheckAddress = longAddress(addressHex);
+        console.log(`Checking network for existing account at address: ${accountCheckAddress}`);
+        const accountInfo = await queryNetwork(`/account/${accountCheckAddress}`);
+
+        // Check if the query returned data indicating an account exists.
+        // This assumes a non-null `accountInfo` with an `account` property means it exists.
+        if (accountInfo && accountInfo.account) {
+          console.log('Account already exists for this private key:', accountInfo);
+          this.privateKeyError.textContent = 'An account already exists for this private key.';
+          this.privateKeyError.style.color = '#dc3545';
+          this.privateKeyError.style.display = 'inline';
+          // Re-enable controls when account already exists
+          this.reEnableControls();
+          return; // Stop the account creation process
+        } else {
+          console.log('No existing account found for this private key.');
+          this.privateKeyError.style.display = 'none';
+        }
+      } catch (error) {
+        console.error('Error checking for existing account:', error);
+        this.privateKeyError.textContent = 'Network error checking key. Please try again.';
+        this.privateKeyError.style.color = '#dc3545';
+        this.privateKeyError.style.display = 'inline';
+        // Re-enable controls on network error
+        this.reEnableControls();
+        return; // Stop process on error
+      }
+    }
+
+    // Create new account entry
+    myAccount = {
+      netid,
+      username,
+      chatTimestamp: 0,
+      keys: {
+        address: addressHex,
+        public: publicKeyHex,
+        secret: privateKeyHex,
+        type: 'secp256k1',
+        pqSeed: pqSeed, // store only the 64 byte seed instead of 32,000 byte public and secret keys
+      },
+    };
+    let waitingToastId = showToast('Creating account...', 0, 'loading');
+    let res;
+
+    try {
+      await getNetworkParams();
+      const storedKey = `${username}_${netid}`;
+      const storedData = localStorage.getItem(storedKey);
+      if (storedData) {
+        myData = JSON.parse(storedData);
+        myAccount = myData.account;
+      } else {
+        // create new data record if it doesn't exist
+        myData = newDataRecord(myAccount);
+      }
+      res = await postRegisterAlias(username, myAccount.keys);
+    } catch (error) {
+      this.reEnableControls();
+      if (waitingToastId) hideToast(waitingToastId);
+      showToast(`Failed to fetch network parameters, try again later.`, 0, 'error');
+      console.error('Failed to fetch network parameters, using defaults:', error);
+      return;
+    }
+
+    if (res && res.result && res.result.success && res.txid) {
+      const txid = res.txid;
+
+      try {
+        // Start interval since trying to create account and tx should be in pending
+        if (!checkPendingTransactionsIntervalId) {
+          checkPendingTransactionsIntervalId = setInterval(checkPendingTransactions, 5000);
+        }
+
+        // Wait for the transaction confirmation
+        const confirmationDetails = await pendingPromiseService.register(txid);
+        if (
+          confirmationDetails.username !== username ||
+          confirmationDetails.address !== longAddress(myAccount.keys.address)
+        ) {
+          throw new Error('Confirmation details mismatch.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (waitingToastId) hideToast(waitingToastId);
+        showToast('Account created successfully!', 3000, 'success');
+        this.reEnableControls();
+        this.close();
+        welcomeScreen.close();
+        // TODO: may not need to get set since gets set in `getChats`. Need to check signin flow.
+        //getChats.lastCall = getCorrectedTimestamp();
+        // Store updated accounts back in localStorage
+        existingAccounts.netids[netid].usernames[username] = { address: myAccount.keys.address };
+        localStorage.setItem('accounts', stringify(existingAccounts));
+        saveState();
+
+        signInModal.open(username);
+      } catch (error) {
+        if (waitingToastId) hideToast(waitingToastId);
+        console.log(`DEBUG: handleCreateAccount error`, JSON.stringify(error, null, 2));
+        showToast(`account creation failed: ${error}`, 0, 'error');
+        this.reEnableControls();
+
+        // Clear interval
+        if (checkPendingTransactionsIntervalId) {
+          clearInterval(checkPendingTransactionsIntervalId);
+          checkPendingTransactionsIntervalId = null;
+        }
+
+        // Note: `checkPendingTransactions` will also remove the item from `myData.pending` if it's rejected by the service.
+        return;
+      }
+    } else {
+      if (waitingToastId) hideToast(waitingToastId);
+      console.error(`DEBUG: handleCreateAccount error in else`, JSON.stringify(res, null, 2));
+
+      // Clear intervals
+      if (updateWebSocketIndicatorIntervalId && wsManager) {
+        clearInterval(updateWebSocketIndicatorIntervalId);
+        updateWebSocketIndicatorIntervalId = null;
+      }
+      if (checkPendingTransactionsIntervalId) {
+        clearInterval(checkPendingTransactionsIntervalId);
+        checkPendingTransactionsIntervalId = null;
+      }
+      if (getSystemNoticeIntervalId) {
+        clearInterval(getSystemNoticeIntervalId);
+        getSystemNoticeIntervalId = null;
+      }
+
+      // no toast here since injectTx will show it
+      this.reEnableControls();
+      return;
+    }
+  }
+
+  reEnableControls() {
+    this.submitButton.disabled = false;
+    this.toggleButton.disabled = false;
+    this.usernameInput.disabled = false;
+    this.privateKeyInput.disabled = false;
+    this.backButton.disabled = false;
+  }
+}
+
+// Initialize the create account modal
+const createAccountModal = new CreateAccountModal();
+
+/**
+ * Send Asset Form Modal Class
+ * @class
+ * @description Handles the send asset form modal
+ * @returns {void}
+ */
 class SendAssetFormModal {
   constructor() {
-    this.modal = document.getElementById('sendAssetFormModal');
-    this.openSendAssetFormModalButton = document.getElementById('openSendAssetFormModal');
-    this.closeSendAssetFormModalButton = document.getElementById('closeSendAssetFormModal');
-    this.sendForm = document.getElementById('sendForm');
     this.username = null;
-    this.usernameInput = document.getElementById('sendToAddress');
-    this.amountInput = document.getElementById('sendAmount');
-    this.memoInput = document.getElementById('sendMemo');
-    this.retryTxIdInput = document.getElementById('retryOfPaymentTxId');
-    this.usernameAvailable = document.getElementById('sendToAddressError');
-    this.submitButton = document.querySelector('#sendForm button[type="submit"]');
-    this.assetSelectDropdown = document.getElementById('sendAsset');
     this.sendAssetFormModalCheckTimeout = null;
-    this.balanceSymbol = document.getElementById('balanceSymbol');
-    this.availableBalance = document.getElementById('availableBalance');
-    this.toggleBalanceButton = document.getElementById('toggleBalance');
+    this.foundAddressObject = { address: null };
+    this.needTollInfo = false;
+    this.tollInfo = {};
+    this.memoValidation = {}
   }
 
   /**
@@ -8528,8 +7772,28 @@ class SendAssetFormModal {
    * @returns {void}
    */
   load() {
+    this.modal = document.getElementById('sendAssetFormModal');
+    this.closeSendAssetFormModalButton = document.getElementById('closeSendAssetFormModal');
+    this.sendForm = document.getElementById('sendForm');
+    this.usernameInput = document.getElementById('sendToAddress');
+    this.amountInput = document.getElementById('sendAmount');
+    this.memoInput = document.getElementById('sendMemo');
+    this.retryTxIdInput = document.getElementById('retryOfPaymentTxId');
+    this.usernameAvailable = document.getElementById('sendToAddressError');
+    this.submitButton = document.querySelector('#sendForm button[type="submit"]');
+    this.assetSelectDropdown = document.getElementById('sendAsset');
+    this.balanceSymbol = document.getElementById('balanceSymbol');
+    this.availableBalance = document.getElementById('availableBalance');
+    this.toggleBalanceButton = document.getElementById('toggleBalance');
+    this.tollMemoSpan = document.getElementById('tollMemo');
+    // Add balance element references
+    this.balanceAmount = document.getElementById('balanceAmount');
+    this.transactionFee = document.getElementById('transactionFee');
+    this.balanceWarning = document.getElementById('balanceWarning');
+    this.memoLabel = document.querySelector('label[for="sendMemo"]');
+    this.memoByteCounter = document.querySelector('.memo-byte-counter');
+
     // TODO add comment about which send form this is for chat or assets
-    this.openSendAssetFormModalButton.addEventListener('click', this.open.bind(this));
     this.closeSendAssetFormModalButton.addEventListener('click', this.close.bind(this));
     this.sendForm.addEventListener('submit', this.handleSendFormSubmit.bind(this));
     // TODO: need to add check that it's not a back/delete key
@@ -8542,6 +7806,8 @@ class SendAssetFormModal {
       // updateSendAddresses();
       this.updateAvailableBalance();
     });
+    // amount input listener for normalizing
+    this.amountInput.addEventListener('input', () => this.amountInput.value = normalizeUnsignedFloat(this.amountInput.value));
     // amount input listener for real-time balance validation
     this.amountInput.addEventListener('input', this.updateAvailableBalance.bind(this));
     // Add custom validation message for minimum amount
@@ -8556,26 +7822,38 @@ class SendAssetFormModal {
     });
     // event listener for toggle LIB/USD button
     this.toggleBalanceButton.addEventListener('click', this.handleToggleBalance.bind(this));
-    this.usernameInput.addEventListener('paste', handlePaste);
-    this.usernameInput.addEventListener('input', filterUsernameInput);
+    this.memoInput.addEventListener('input', this.handleMemoInputChange.bind(this));
+
+    //QR scanning
+    this.scanQRButton = document.getElementById('scanQRButton');
+    this.uploadQRButton = document.getElementById('uploadQRButton');
+    this.qrFileInput = document.getElementById('qrFileInput');
+    this.scanQRButton.addEventListener('click', () => scanQRModal.open());
+    this.uploadQRButton.addEventListener('click', () => {this.qrFileInput.click();});
+    this.qrFileInput.addEventListener('change', (event) => this.handleQRFileSelect(event, this));
   }
 
   /**
    * Opens the send asset modal
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async open() {
     this.modal.classList.add('active');
+    this.memoValidation = {};
+    this.memoByteCounter.textContent = '';
+    this.memoByteCounter.style.display = 'none';
 
     // Clear fields when opening the modal
     this.usernameInput.value = '';
     this.amountInput.value = '';
     this.memoInput.value = '';
     this.retryTxIdInput.value = '';
+    this.tollMemoSpan.textContent = '';
+    this.foundAddressObject.address = null;
 
     this.usernameAvailable.style.display = 'none';
     this.submitButton.disabled = true;
-    openQRScanModal.fill = fillPaymentFromQR; // set function to handle filling the payment form from QR data
+    scanQRModal.fillFunction = this.fillFromQR.bind(this); // set function to handle filling the payment form from QR data
 
     if (this.username) {
       this.usernameInput.value = this.username;
@@ -8585,7 +7863,7 @@ class SendAssetFormModal {
       this.username = null;
     }
 
-    await updateWalletBalances(); // Refresh wallet balances first
+    await walletScreen.updateWalletBalances(); // Refresh wallet balances first
     // Get wallet data
     const wallet = myData.wallet;
     // Populate assets dropdown
@@ -8599,10 +7877,10 @@ class SendAssetFormModal {
 
   /**
    * Closes the send asset modal
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async close() {
-    await updateChatList();
+    await chatsScreen.updateChatList();
     this.modal.classList.remove('active');
     this.sendForm.reset();
     this.username = null;
@@ -8615,14 +7893,20 @@ class SendAssetFormModal {
    * @returns {void}
    */
   async handleSendToAddressInput(e) {
+    this.submitButton.disabled = true;
+
     // Check availability on input changes
     const username = normalizeUsername(e.target.value);
+    e.target.value = username;
     const usernameAvailable = this.usernameAvailable;
 
     // Clear previous timeout
     if (this.sendAssetFormModalCheckTimeout) {
       clearTimeout(this.sendAssetFormModalCheckTimeout);
     }
+
+    this.clearFormInfo();
+    this.foundAddressObject.address = null;
 
     // Check if username is too short
     if (username.length < 3) {
@@ -8635,7 +7919,7 @@ class SendAssetFormModal {
 
     // Check network availability
     this.sendAssetFormModalCheckTimeout = setTimeout(async () => {
-      const taken = await checkUsernameAvailability(username, myAccount.keys.address);
+      const taken = await checkUsernameAvailability(username, myAccount.keys.address, this.foundAddressObject);
       if (taken == 'taken') {
         usernameAvailable.textContent = 'found';
         usernameAvailable.style.color = '#28a745';
@@ -8653,8 +7937,140 @@ class SendAssetFormModal {
         usernameAvailable.style.color = '#dc3545';
         usernameAvailable.style.display = 'inline';
       }
-      await this.refreshSendButtonDisabledState(); // Update button state based on new address status and current amount status
+      // check if found
+      if (this.foundAddressObject.address) {
+        this.needTollInfo = true;
+        await this.validateForm();
+      } else {
+        await this.refreshSendButtonDisabledState();
+      }
     }, 1000);
+  }
+
+  async validateForm() {
+    if (this.needTollInfo) {
+      const myAddr = longAddress(myAccount.keys.address);
+      const contactAddr = longAddress(this.foundAddressObject.address);
+      const sortedAddresses = [myAddr, contactAddr].sort();
+      const chatId = hashBytes(sortedAddresses.join(''));
+      const myIndex = sortedAddresses.indexOf(myAddr);
+      const toIndex = 1 - myIndex;
+
+      // query
+      const tollInfo_ = await queryNetwork(`/messages/${chatId}/toll`);
+      // query account for toll set by receiver
+      const accountData = await queryNetwork(`/account/${this.foundAddressObject.address}`);
+      const queriedToll = accountData?.account?.data?.toll; // type bigint
+      const queriedTollUnit = accountData?.account?.data?.tollUnit; // type string
+      this.tollInfo = {
+        toll: queriedToll,
+        tollUnit: queriedTollUnit,
+        required: tollInfo_?.toll?.required?.[toIndex] ?? 1, // assume toll is required if not set
+      };
+      this.needTollInfo = false;
+    }
+
+    // memo byte size validation
+    const memoText = this.memoInput.value;
+    this.memoValidation = this.validateMemoSize(memoText);
+    this.updateMemoByteCounter(this.memoValidation);
+
+    if (this.tollInfo.required !== undefined && this.tollInfo.toll !== undefined) {
+      // build string to display under memo input. with lib amoutn and (usd amount)
+      /* const tollInfoString = `Toll:  */
+      this.updateMemoTollUI();
+      this.refreshSendButtonDisabledState();
+    }
+  }
+
+  /**
+   * validateMemoSize
+   * @param {string} text - The text to validate
+   * @returns {object} - The validation object
+   */
+  validateMemoSize(text) {
+    const maxBytes = MAX_MEMO_BYTES;
+    const byteSize = new Blob([text]).size;
+    return {
+      isValid: byteSize <= maxBytes,
+      currentBytes: byteSize,
+      remainingBytes: maxBytes - byteSize,
+      percentage: (byteSize / maxBytes) * 100,
+      maxBytes: maxBytes
+    };
+  }
+
+  updateMemoByteCounter(validation) {
+    // Only show counter when at 90% or higher
+    if (validation.percentage >= 90) {
+      
+      if (validation.percentage > 100) {
+        this.memoByteCounter.style.color = '#dc3545';
+        this.memoByteCounter.textContent = `${validation.currentBytes - validation.maxBytes} bytes - over limit`;
+      } else if (validation.percentage >= 90) {
+        this.memoByteCounter.style.color = '#ffa726';
+        this.memoByteCounter.textContent = `${validation.remainingBytes} bytes - left`;
+      }
+      this.memoByteCounter.style.display = 'inline';
+    } else {
+      this.memoByteCounter.style.display = 'none';
+    }
+  }
+  /**
+   * updateTollAmountUI
+   */
+  updateMemoTollUI() {
+    this.tollMemoSpan.style.color = 'black';
+    let toll = this.tollInfo.toll || 0n;
+    const tollUnit = this.tollInfo.tollUnit || 'LIB';
+    const decimals = 18;
+    const mainIsUSD = tollUnit === 'USD';
+    const mainValue = parseFloat(big2str(toll, decimals));
+    // Conversion factor (USD/LIB)
+    const scaleMul = parameters.current.stabilityScaleMul || 1;
+    const scaleDiv = parameters.current.stabilityScaleDiv || 1;
+    const factor = scaleDiv !== 0 ? scaleMul / scaleDiv : 1;
+    let mainString, otherString;
+    if (mainIsUSD) {
+      toll = bigxnum2big(toll, (1.0 / factor).toString());
+      mainString = mainValue.toFixed(6) + ' USD';
+      const libValue = mainValue / factor;
+      otherString = libValue.toFixed(6) + ' LIB';
+    } else {
+      mainString = mainValue.toFixed(6) + ' LIB';
+      const usdValue = mainValue * factor;
+      otherString = usdValue.toFixed(6) + ' USD';
+    }
+    let display;
+    if (this.tollInfo.required == 1) {
+      display = `${mainString} = ${otherString}`;
+      if (this.memoInput.value.trim() == '') {
+        display = '';
+      }
+    } else if (this.tollInfo.required == 2) {
+      this.tollMemoSpan.style.color = 'red';
+      display = `blocked`;
+    } else {
+      // light green used to show success
+      this.tollMemoSpan.style.color = '#28a745';
+      display = `free; ${mainString} = ${otherString}`;
+    }
+    //display the container
+    if (display != '') {
+      // want only the word "Toll:" to be black and bold
+      display = '<span style="color: black;">Toll:</span> ' + display;
+    }
+    this.tollMemoSpan.innerHTML = display;
+  }
+
+  clearFormInfo() {
+    this.tollMemoSpan.textContent = '';
+  }
+
+  handleMemoInputChange() {
+    if (this.foundAddressObject.address) {
+      this.validateForm();
+    }
   }
 
   /**
@@ -8666,43 +8082,45 @@ class SendAssetFormModal {
     event.preventDefault();
 
     // Get form values
-    const assetSymbol =
-      this.assetSelectDropdown.options[this.assetSelectDropdown.selectedIndex].text;
-    let amount = this.amountInput.value;
+    const assetSymbol = this.assetSelectDropdown.options[this.assetSelectDropdown.selectedIndex].text;
+    const amount = this.amountInput.value;
     const memo = this.memoInput.value;
-    const confirmButton = document.getElementById('confirmSendButton');
-    const cancelButton = document.getElementById('cancelSendButton');
+    const confirmButton = sendAssetConfirmModal.confirmSendButton;
+    const cancelButton = sendAssetConfirmModal.cancelButton;
 
     await getNetworkParams();
-    const scalabilityFactor =
-      parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+    const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
 
-    // need to convert to LIB if USD is selected
+    // get `usdAmount` and `libAmount`
+    let usdAmount;
+    let libAmount;
     const isLib = this.balanceSymbol.textContent === 'LIB';
     if (!isLib) {
-      amount = amount / scalabilityFactor;
+      usdAmount = this.amountInput.value;
+      libAmount = amount / scalabilityFactor;
+    } else {
+      usdAmount = amount * scalabilityFactor;
+      libAmount = amount;
     }
 
     // Update confirmation modal with values
-    document.getElementById('confirmRecipient').textContent = this.usernameInput.value;
-    document.getElementById('confirmAmount').textContent = `${amount}`;
-    document.getElementById('confirmAsset').textContent = assetSymbol;
+    sendAssetConfirmModal.confirmAmountUSD.textContent = `≈ $${parseFloat(usdAmount).toFixed(6)} USD`;
+    sendAssetConfirmModal.confirmRecipient.textContent = this.usernameInput.value;
+    sendAssetConfirmModal.confirmAmount.textContent = `${libAmount}`;
+    sendAssetConfirmModal.confirmAsset.textContent = assetSymbol;
 
     // Show/hide memo if present
-    const memoGroup = document.getElementById('confirmMemoGroup');
+    const memoGroup = sendAssetConfirmModal.confirmMemoGroup;
     if (memo) {
-      document.getElementById('confirmMemo').textContent = memo;
+      sendAssetConfirmModal.confirmMemo.textContent = memo;
       memoGroup.style.display = 'block';
     } else {
       memoGroup.style.display = 'none';
     }
 
-    // Hide send asset modal and show confirmation modal
-    this.modal.classList.remove('active');
-
     confirmButton.disabled = false;
     cancelButton.disabled = false;
-    document.getElementById('sendAssetConfirmModal').classList.add('active');
+    sendAssetConfirmModal.open();
   }
 
   /**
@@ -8714,20 +8132,18 @@ class SendAssetFormModal {
     const asset = myData.wallet.assets[this.assetSelectDropdown.value];
     const feeInWei = parameters.current.transactionFee || 1n * wei;
     const maxAmount = BigInt(asset.balance) - feeInWei;
+    const maxAmountStr = big2str(maxAmount > 0n ? maxAmount : 0n, 18).slice(0, -16);
 
     // Check if we're in USD mode
     const isUSD = this.balanceSymbol.textContent === 'USD';
 
     if (isUSD) {
-      const scalabilityFactor =
-        parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+      const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
       // Convert to USD before displaying
-      const maxAmountUSD =
-        parseFloat(big2str(maxAmount > 0n ? maxAmount : 0n, 18)) * scalabilityFactor;
-      this.amountInput.value = maxAmountUSD.toString();
+      this.amountInput.value = (parseFloat(maxAmountStr) * scalabilityFactor).toString();
     } else {
       // Display in LIB
-      this.amountInput.value = big2str(maxAmount > 0n ? maxAmount : 0n, 18).slice(0, -16);
+      this.amountInput.value = maxAmountStr;
     }
     this.amountInput.dispatchEvent(new Event('input'));
   }
@@ -8760,44 +8176,28 @@ class SendAssetFormModal {
    */
   async updateBalanceDisplay(asset) {
     if (!asset) {
-      document.getElementById('balanceAmount').textContent = '0.0000';
-      document.getElementById('availableBalanceSymbol').textContent = '';
-      document.getElementById('transactionFee').textContent = '0.00';
+      this.balanceAmount.textContent = '0.0000';
+      this.transactionFee.textContent = '0.00';
       return;
     }
 
     await getNetworkParams();
     const txFeeInLIB = parameters.current.transactionFee || 1n * wei;
-    const scalabilityFactor =
-      parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+    const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
 
     // Preserve the current toggle state (LIB/USD) instead of overwriting it
-    const balanceSymbolElement = document.getElementById('balanceSymbol');
-    const currentSymbol = balanceSymbolElement.textContent;
+    const currentSymbol = this.balanceSymbol.textContent;
     const isCurrentlyUSD = currentSymbol === 'USD';
 
     // Only set to asset symbol if it's empty (initial state)
     if (!currentSymbol) {
-      balanceSymbolElement.textContent = asset.symbol;
+      this.balanceSymbol.textContent = asset.symbol;
     }
 
     const balanceInLIB = big2str(BigInt(asset.balance), 18).slice(0, -12);
     const feeInLIB = big2str(txFeeInLIB, 18).slice(0, -16);
 
-    // Set the base LIB values first
-    document.getElementById('balanceAmount').textContent = balanceInLIB;
-    document.getElementById('transactionFee').textContent = feeInLIB + ' LIB';
-    document.getElementById('availableBalanceSymbol').textContent = asset.symbol;
-
-    // If currently showing USD, convert the displayed values
-    if (isCurrentlyUSD) {
-      const balanceAmount = document.getElementById('balanceAmount');
-      const transactionFee = document.getElementById('transactionFee');
-
-      balanceAmount.textContent = '$' + (parseFloat(balanceInLIB) * scalabilityFactor).toString();
-      transactionFee.textContent = '$' + (parseFloat(feeInLIB) * scalabilityFactor).toString();
-      document.getElementById('availableBalanceSymbol').textContent = '';
-    }
+    this.updateBalanceAndFeeDisplay(balanceInLIB, feeInLIB, isCurrentlyUSD, scalabilityFactor);
   }
 
   /**
@@ -8823,44 +8223,78 @@ class SendAssetFormModal {
    * @returns {Promise<void>}
    */
   async refreshSendButtonDisabledState() {
-    const sendToAddressError = document.getElementById('sendToAddressError');
     // Address is valid if its error/status message is visible and set to 'found'.
     const isAddressConsideredValid =
-      sendToAddressError.style.display === 'inline' && sendToAddressError.textContent === 'found';
-    //console.log(`isAddressConsideredValid ${isAddressConsideredValid}`);
+      this.usernameAvailable.style.display === 'inline' && this.usernameAvailable.textContent === 'found';
 
-    const amountInput = document.getElementById('sendAmount');
-    const amount = amountInput.value;
-    const assetIndex = document.getElementById('sendAsset').value;
-    const balanceWarning = document.getElementById('balanceWarning');
+    const amount = this.amountInput.value.trim();
+
+    if (amount == '' || parseFloat(amount) == 0) {
+      this.balanceWarning.textContent = '';
+      this.balanceWarning.style.display = 'none';
+      this.submitButton.disabled = true;
+      return;
+    }
+
+    const assetIndex = this.assetSelectDropdown.value;
 
     // Check if amount is in USD and convert to LIB for validation
-    const balanceSymbol = document.getElementById('balanceSymbol');
-    const isUSD = balanceSymbol.textContent === 'USD';
+    const isUSD = this.balanceSymbol.textContent === 'USD';
     let amountForValidation = amount;
-
     if (isUSD && amount) {
       await getNetworkParams();
-      const scalabilityFactor =
-        parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+      const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
       amountForValidation = parseFloat(amount) / scalabilityFactor;
     }
 
     // convert amount to bigint
     const amountBigInt = bigxnum2big(wei, amountForValidation.toString());
 
-    // validateBalance returns false if the amount/balance is invalid.
-    const isAmountAndBalanceValid = await validateBalance(amountBigInt, assetIndex, balanceWarning);
-    console.log(`isAmountAndBalanceValid ${isAmountAndBalanceValid}`);
+    // returns false if the amount/balance is invalid.
+    const isAmountAndBalanceValid = await validateBalance(amountBigInt, assetIndex, this.balanceWarning);
 
-    const submitButton = document.querySelector('#sendForm button[type="submit"]');
-
-    // Enable button only if both conditions are met.
-    if (isAddressConsideredValid && isAmountAndBalanceValid) {
-      submitButton.disabled = false;
-    } else {
-      submitButton.disabled = true;
+    let isAmountAndTollValid = true;
+    if (this.foundAddressObject.address) {
+      if (this.amountInput.value.trim() != '') {
+        isAmountAndTollValid = this.validateToll(amountBigInt);
+        console.log('ismountAndTollValid ' + isAmountAndTollValid);
+      }
     }
+    // Enable button only if both conditions are met.
+    if (isAddressConsideredValid && isAmountAndBalanceValid && isAmountAndTollValid && this.memoValidation.isValid) {
+      this.submitButton.disabled = false;
+    } else {
+      this.submitButton.disabled = true;
+    }
+  }
+
+  validateToll(amount) {
+    // check if user is required to pay a toll
+    if (this.tollInfo.required == 1) {
+      if (this.memoInput.value.trim() != '') {
+        console.log('checking if toll > amount');
+        const scaleMul = parameters.current.stabilityScaleMul || 1;
+        const scaleDiv = parameters.current.stabilityScaleDiv || 1;
+        const factor = scaleDiv !== 0 ? scaleMul / scaleDiv : 1;
+        let amountInLIB = amount;
+        let tollInLIB = this.tollInfo.toll;
+        if (this.tollInfo.tollUnit !== 'LIB') {
+          tollInLIB = bigxnum2big(this.tollInfo.toll, (1.0 / factor).toString());
+        }
+        console.log(
+          `toll > amount  ${big2str(tollInLIB, 8)} > ${big2str(amountInLIB, 8)} : ${tollInLIB > amountInLIB}`
+        );
+        if (tollInLIB > amountInLIB) {
+          this.balanceWarning.textContent = 'Amount is less than toll for memo.';
+          this.balanceWarning.style.display = 'block';
+          return false;
+        }
+      }
+    }
+    if (this.tollInfo.required == 2) {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -8871,19 +8305,14 @@ class SendAssetFormModal {
    */
   async handleToggleBalance(e) {
     e.preventDefault();
-    const balanceSymbol = document.getElementById('balanceSymbol');
-    balanceSymbol.textContent = balanceSymbol.textContent === 'LIB' ? 'USD' : 'LIB';
-    const sendAmount = document.getElementById('sendAmount');
-    const balanceAmount = document.getElementById('balanceAmount');
-    const transactionFee = document.getElementById('transactionFee');
+    this.balanceSymbol.textContent = this.balanceSymbol.textContent === 'LIB' ? 'USD' : 'LIB';
 
     // check the context value of the button to determine if it's LIB or USD
-    const isLib = balanceSymbol.textContent === 'LIB';
+    const isLib = this.balanceSymbol.textContent === 'LIB';
 
     // get the scalability factor for LIB/USD conversion
     await getNetworkParams();
-    const scalabilityFactor =
-      parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
+    const scalabilityFactor = parameters.current.stabilityScaleMul / parameters.current.stabilityScaleDiv;
 
     // Get the raw values in LIB format
     const asset = myData.wallet.assets[this.assetSelectDropdown.value];
@@ -8893,20 +8322,925 @@ class SendAssetFormModal {
 
     // if isLib is false, convert the sendAmount to USD
     if (!isLib) {
-      sendAmount.value = sendAmount.value * scalabilityFactor;
-      balanceAmount.textContent = '$' + (parseFloat(balanceInLIB) * scalabilityFactor).toString();
-      document.getElementById('availableBalanceSymbol').textContent = '';
-      transactionFee.textContent = '$' + (parseFloat(feeInLIB) * scalabilityFactor).toString();
+      this.amountInput.value = this.amountInput.value * scalabilityFactor;
     } else {
-      sendAmount.value = sendAmount.value / scalabilityFactor;
-      balanceAmount.textContent = balanceInLIB;
-      document.getElementById('availableBalanceSymbol').textContent = 'LIB';
-      transactionFee.textContent = feeInLIB + ' LIB';
+      this.amountInput.value = this.amountInput.value / scalabilityFactor;
+    }
+
+    this.updateBalanceAndFeeDisplay(balanceInLIB, feeInLIB, !isLib, scalabilityFactor);
+  }
+
+  /**
+   * Updates the display of balance and fee amounts with appropriate formatting
+   * @param {string} balanceInLIB - The balance amount in LIB
+   * @param {string} feeInLIB - The fee amount in LIB
+   * @param {boolean} isUSD - Whether to display in USD format
+   * @param {number} scalabilityFactor - The factor to convert between LIB and USD
+   */
+  updateBalanceAndFeeDisplay(balanceInLIB, feeInLIB, isUSD, scalabilityFactor) {
+    if (isUSD) {
+      this.balanceAmount.textContent = '$' + (parseFloat(balanceInLIB) * scalabilityFactor).toPrecision(6);
+      this.transactionFee.textContent = '$' + (parseFloat(feeInLIB) * scalabilityFactor).toPrecision(2);
+    } else {
+      this.balanceAmount.textContent = balanceInLIB + ' LIB';
+      this.transactionFee.textContent = feeInLIB + ' LIB';
+    }
+  }
+
+  /**
+   * Reopens the send asset form modal with the previous values
+   * @returns {Promise<void>}
+   */
+  async reopen() {
+    const tempUsername = this.usernameInput?.value;
+    const tempAmount = this.amountInput?.value;
+    const tempMemo = this.memoInput?.value;
+    await this.close();
+    this.username = tempUsername;
+    await this.open();
+    this.amountInput.value = tempAmount;
+    this.memoInput.value = tempMemo || '';
+  }
+
+  /**
+   * Check if the send asset form modal is active
+   * @returns {boolean}
+   */
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
+  }
+
+  /**
+   * Resets the form fields to empty values
+   * @returns {void}
+   */
+  resetForm(){
+    this.sendForm?.reset();
+    this.usernameAvailable.textContent = '';
+    this.balanceWarning.textContent = '';
+  }
+
+  /**   * Handles QR file selection and decoding
+   * @param {Event} event - The file input change event
+   * @param {Object} targetModal - The modal instance to fill with QR data
+   * @returns {Promise<void>}
+   * */
+  async handleQRFileSelect(event, targetModal) {
+    const file = event.target.files[0];
+    if (!file) {
+      return; // No file selected
+    }
+
+    const reader = new FileReader();
+
+    reader.onload = function (e) {
+      const img = new Image();
+      img.onload = async function () {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) {
+          console.error('Could not get 2d context from canvas');
+          showToast('Error processing image', 3000, 'error');
+          event.target.value = ''; // Reset file input
+          return;
+        }
+        canvas.width = img.width;
+        canvas.height = img.height;
+        context.drawImage(img, 0, 0, img.width, img.height);
+        const imageData = context.getImageData(0, 0, img.width, img.height);
+
+        try {
+          // Use qr.js library for decoding
+          const decodedData = qr.decodeQR({
+            data: imageData.data,
+            width: imageData.width,
+            height: imageData.height,
+          });
+
+          if (decodedData) {
+            if (typeof targetModal.fillFromQR === 'function') {
+              targetModal.fillFromQR(decodedData); // Call the provided fill function
+            } else {
+              console.error('No valid fill function provided for QR file select');
+              // Fallback or default behavior if needed, e.g., show generic error
+              showToast('Internal error handling QR data', 3000, 'error');
+            }
+          } else {
+            // qr.decodeQR might throw an error instead of returning null/undefined
+            // This else block might not be reached if errors are always thrown
+            console.error('No QR code found in image (qr.js)');
+            showToast('No QR code found in image', 3000, 'error');
+            // Clear the form fields in case of failure to find QR code
+            targetModal.resetForm();
+          }
+        } catch (error) {
+          console.error('Error processing QR code image with qr.js:', error);
+          // Assume error means no QR code found or decoding failed
+          showToast('Could not read QR code from image', 3000, 'error');
+          // Clear the form fields in case of error
+          targetModal.resetForm();
+
+        } finally {
+          event.target.value = ''; // Reset the file input value regardless of outcome
+        }
+      };
+      img.onerror = function () {
+        console.error('Error loading image');
+        showToast('Error loading image file', 3000, 'error');
+        event.target.value = ''; // Reset the file input value
+        // Clear the form fields in case of image loading error
+        targetModal.resetForm();
+      };
+      img.src = e.target.result;
+    };
+
+    reader.onerror = function () {
+      console.error('Error reading file');
+      showToast('Error reading file', 3000, 'error');
+      event.target.value = ''; // Reset the file input value
+    };
+
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Fills the payment form from QR code data
+   * @param {string} data - The QR code data to fill the form with
+   * @returns {void}
+   * */
+  fillFromQR(data) {
+    console.log('Attempting to fill payment form from QR:', data);
+
+    // Explicitly check for the required prefix
+    if (!data || !data.startsWith('liberdus://')) {
+      console.error("Invalid payment QR code format. Missing 'liberdus://' prefix.", data);
+      showToast('Invalid payment QR code format.', 3000, 'error');
+      // Optionally clear fields or leave them as they were
+      this.usernameInput.value = '';
+      this.amountInput.value = '';
+      this.memoInput.value = '';
+      return; // Stop processing if the format is wrong
+    }
+
+    // Clear existing fields first
+    this.usernameInput.value = '';
+    this.amountInput.value = '';
+    this.memoInput.value = '';
+
+    try {
+      // Remove the prefix and process the base64 data
+      const base64Data = data.substring('liberdus://'.length);
+      const jsonData = bin2utf8(base642bin(base64Data));
+      const paymentData = JSON.parse(jsonData);
+
+      console.log('Read payment data:', JSON.stringify(paymentData, null, 2));
+
+      if (paymentData.u) {
+        this.usernameInput.value = paymentData.u;
+      }
+      if (paymentData.a) {
+        this.amountInput.value = paymentData.a;
+      }
+      if (paymentData.m) {
+        this.memoInput.value = paymentData.m;
+      }
+
+      // Trigger username validation and amount validation
+      this.usernameInput.dispatchEvent(new Event('input'));
+      this.amountInput.dispatchEvent(new Event('input'));
+    } catch (error) {
+      console.error('Error parsing payment QR data:', error, data);
+      showToast('Failed to parse payment QR data.', 3000, 'error');
+      // Clear fields on error
+      this.usernameInput.value = '';
+      this.amountInput.value = '';
+      this.memoInput.value = '';
+    }
+  }  
+}
+
+const sendAssetFormModal = new SendAssetFormModal();
+
+class SendAssetConfirmModal {
+  constructor() {
+    this.timestamp = getCorrectedTimestamp();
+  }
+
+  load() {
+    this.modal = document.getElementById('sendAssetConfirmModal');
+    this.confirmAmount = document.getElementById('confirmAmount');
+    this.confirmAmountUSD = document.getElementById('confirmAmountUSD');
+    this.confirmAsset = document.getElementById('confirmAsset');
+    this.confirmMemo = document.getElementById('confirmMemo');
+    this.confirmRecipient = document.getElementById('confirmRecipient');
+    this.confirmSendButton = document.getElementById('confirmSendButton');
+    this.closeButton = document.getElementById('closeSendAssetConfirmModal');
+    this.cancelButton = document.getElementById('cancelSendButton');
+    this.confirmMemoGroup = document.getElementById('confirmMemoGroup');
+
+    // Add event listeners for send asset confirmation modal
+    this.closeButton.addEventListener('click', this.close.bind(this));
+    this.confirmSendButton.addEventListener('click', this.handleSendAsset.bind(this));
+    this.cancelButton.addEventListener('click', this.close.bind(this));
+  }
+
+  open() {
+    this.modal.classList.add('active');
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+  }
+  isActive() {
+    return this.modal?.classList.contains('active') || false;
+  }
+
+  // The user has filled out the form to send assets to a recipient and clicked the Send button
+  // The recipient account may not exist in myData.contacts and might have to be created
+  /**
+   * Handle the send asset event
+   * @param {Event} event - The event object
+   * @returns {Promise<void>}- A promise that resolves when the send asset event is handled
+   */
+  async handleSendAsset(event) {
+    event.preventDefault();
+    const confirmButton = this.confirmSendButton;
+    const cancelButton = this.cancelButton;
+    const username = normalizeUsername(sendAssetFormModal.usernameInput.value);
+
+    // if it's your own username disable the send button
+    if (username == myAccount.username) {
+      confirmButton.disabled = true;
+      showToast('You cannot send assets to yourself', 3000, 'error');
+      return;
+    }
+
+    if (getCorrectedTimestamp() - this.timestamp < 2000 || confirmButton.disabled) {
+      return;
+    }
+
+    confirmButton.disabled = true;
+    cancelButton.disabled = true;
+
+    this.timestamp = getCorrectedTimestamp();
+    const wallet = myData.wallet;
+    const assetIndex = sendAssetFormModal.assetSelectDropdown.value; // TODO include the asset id and symbol in the tx
+    const amount = bigxnum2big(wei, sendAssetFormModal.amountInput.value);
+    const memoIn = sendAssetFormModal.memoInput.value || '';
+    const memo = memoIn.trim();
+    const keys = myAccount.keys;
+    let toAddress;
+
+    // Validate amount including transaction fee
+    if (!(await validateBalance(amount, assetIndex))) {
+      await getNetworkParams();
+      const txFeeInLIB = parameters.current.transactionFee || 1n * wei;
+      const balance = BigInt(wallet.assets[assetIndex].balance);
+      const amountStr = big2str(amount, 18).slice(0, -16);
+      const feeStr = big2str(txFeeInLIB, 18).slice(0, -16);
+      const balanceStr = big2str(balance, 18).slice(0, -16);
+      showToast(`Insufficient balance: ${amountStr} + ${feeStr} (fee) > ${balanceStr} LIB`, 0, 'error');
+      cancelButton.disabled = false;
+      return;
+    }
+
+    // Validate username - must be username; address not supported
+    if (username.startsWith('0x')) {
+      showToast('Address not supported; enter username instead.', 0, 'error');
+      cancelButton.disabled = false;
+      return;
+    }
+    if (username.length < 3) {
+      showToast('Username too short', 0, 'error');
+      cancelButton.disabled = false;
+      return;
+    }
+    try {
+      // Look up username on network
+      const usernameBytes = utf82bin(username);
+      const usernameHash = hashBytes(usernameBytes);
+      /*
+          const selectedGateway = network.gateways[Math.floor(Math.random() * network.gateways.length)];
+          const response = await fetch(`${selectedGateway.protocol}://${selectedGateway.host}:${selectedGateway.port}/address/${usernameHash}`);
+          const data = await response.json();
+  */
+      const data = await queryNetwork(`/address/${usernameHash}`);
+      if (!data || !data.address) {
+        showToast('Username not found', 0, 'error');
+        cancelButton.disabled = false;
+        return;
+      }
+      toAddress = normalizeAddress(data.address);
+    } catch (error) {
+      console.error('Error looking up username:', error);
+      showToast('Error looking up username', 0, 'error');
+      cancelButton.disabled = false;
+      return;
+    }
+
+    if (!myData.contacts[toAddress]) {
+      createNewContact(toAddress, username, 2);
+    }
+
+    // Get recipient's public key from contacts
+    let recipientPubKey = myData.contacts[toAddress]?.public;
+    let pqRecPubKey = myData.contacts[toAddress]?.pqPublic;
+    let pqEncSharedKey = '';
+    if (!recipientPubKey || !pqRecPubKey) {
+      const recipientInfo = await queryNetwork(`/account/${longAddress(toAddress)}`);
+      if (!recipientInfo?.account?.publicKey) {
+        console.log(`no public key found for recipient ${toAddress}`);
+        cancelButton.disabled = false;
+        return;
+      }
+      if (recipientInfo.account.publicKey) {
+        recipientPubKey = recipientInfo.account.publicKey;
+        myData.contacts[toAddress].public = recipientPubKey;
+      }
+      if (recipientInfo.account.pqPublicKey) {
+        pqRecPubKey = recipientInfo.account.pqPublicKey;
+        myData.contacts[toAddress].pqPublic = pqRecPubKey;
+      }
+    }
+    let dhkey = '';
+    let sharedKeyMethod = 'none';
+    if (recipientPubKey) {
+      dhkey = ecSharedKey(keys.secret, recipientPubKey);
+      sharedKeyMethod = 'ec';
+      if (pqRecPubKey) {
+        // Generate shared secret using ECDH and take first 32 bytes
+        const { cipherText, sharedSecret } = pqSharedKey(pqRecPubKey);
+        const combined = new Uint8Array(dhkey.length + sharedSecret.length);
+        combined.set(dhkey);
+        combined.set(sharedSecret, dhkey.length);
+        dhkey = deriveDhKey(combined);
+        pqEncSharedKey = bin2base64(cipherText);
+        sharedKeyMethod = 'pq';
+      }
+    }
+
+    let encMemo = '';
+    if (memo && sharedKeyMethod !== 'none') {
+      // We purposely do not encrypt/decrypt using browser native crypto functions; all crypto functions must be readable
+      // Encrypt message using shared secret
+      encMemo = encryptChacha(dhkey, memo);
+    }
+
+    // hidden input field retryOfTxId value is not an empty string
+    if (sendAssetFormModal.retryTxIdInput.value) {
+      // remove from myData use txid from hidden field retryOfPaymentTxId
+      removeFailedTx(sendAssetFormModal.retryTxIdInput.value, toAddress);
+
+      // clear the field
+      failedTransactionModal.txid = '';
+      failedTransactionModal.address = '';
+      failedTransactionModal.memo = '';
+      sendAssetFormModal.retryTxIdInput.value = '';
+    }
+
+    // only include the sender info if the recipient is is a friend and has a pqKey
+    let encSenderInfo = '';
+    let senderInfo = '';
+    if (pqRecPubKey && myData.contacts[toAddress]?.friend === 3) {
+      // Create sender info object
+      senderInfo = {
+        username: myAccount.username,
+        name: myData.account.name,
+        email: myData.account.email,
+        phone: myData.account.phone,
+        linkedin: myData.account.linkedin,
+        x: myData.account.x,
+      };
+    } else if (recipientPubKey) {
+      senderInfo = {
+        username: myAccount.username,
+      };
+    } else {
+      senderInfo = { username: myAccount.address };
+    }
+    if (sharedKeyMethod !== 'none') {
+      encSenderInfo = encryptChacha(dhkey, stringify(senderInfo));
+    } else {
+      encSenderInfo = stringify(senderInfo);
+    }
+    // Create message payload
+    const payload = {
+      message: encMemo, // we need to call this field message, so we can use decryptMessage()
+      senderInfo: encSenderInfo,
+      encrypted: true,
+      encryptionMethod: 'xchacha20poly1305',
+      pqEncSharedKey: pqEncSharedKey,
+      sharedKeyMethod: sharedKeyMethod,
+      sent_timestamp: getCorrectedTimestamp(),
+    };
+
+    try {
+      console.log('payload is', payload);
+      // Send the transaction using postAssetTransfer
+      const response = await postAssetTransfer(toAddress, amount, payload, keys);
+
+      if (!response || !response.result || !response.result.success) {
+        const str = response.result.reason;
+        const regex = /toll/i;
+
+        if (str.match(regex) || str.match(/at least/i)) {
+          await sendAssetFormModal.reopen();
+        }
+        throw new Error('Transaction failed');
+      }
+
+      /* if (!response || !response.result || !response.result.success) {
+              alert('Transaction failed: ' + response.result.reason);
+              return;
+          } */
+
+      // Create contact if it doesn't exit
+      /* if (!myData.contacts[toAddress].messages) {
+        const username = document.getElementById('sendToAddress').value;
+        createNewContact(toAddress, username, 2);
+        // TODO can pass the username to createNewConact and get rid of the following line
+        // myData.contacts[toAddress].username = normalizeUsername(recipientInput);
+      } */
+
+      // Add transaction to history
+      const currentTime = getCorrectedTimestamp();
+
+      const newPayment = {
+        txid: response.txid,
+        amount: amount,
+        sign: -1,
+        timestamp: currentTime,
+        address: toAddress,
+        memo: memo,
+        status: 'sent',
+      };
+      insertSorted(wallet.history, newPayment, 'timestamp');
+
+      // Don't try to update the balance here; the tx might not have gone through; let user refresh the balance from the wallet page
+      // Maybe we can set a timer to check on the status of the tx using txid and update the balance if the txid was processed
+      /*
+          // Update local balance after successful transaction
+          fromAddress.balance -= amount;
+          walletData.balance = walletData.assets.reduce((total, asset) =>
+              total + asset.addresses.reduce((sum, addr) => sum + bigxnum2num(addr.balance, asset.price), 0), 0);
+          // Update wallet view and close modal
+          updateWalletView();
+  */
+
+      // --- Create and Insert Sent Transfer Message into contact.messages ---
+      const transferMessage = {
+        timestamp: currentTime,
+        sent_timestamp: currentTime,
+        my: true, // Sent transfer
+        message: memo, // Use the memo as the message content
+        amount: amount, // Use the BigInt amount
+        symbol: 'LIB', // TODO: Use the asset symbol
+        txid: response.txid,
+        status: 'sent',
+      };
+      // Insert the transfer message into the contact's message list, maintaining sort order
+      insertSorted(myData.contacts[toAddress].messages, transferMessage, 'timestamp');
+      // --------------------------------------------------------------
+
+      // --- Update myData.chats to reflect the new message ---
+      const existingChatIndex = myData.chats.findIndex((chat) => chat.address === toAddress);
+      if (existingChatIndex !== -1) {
+        myData.chats.splice(existingChatIndex, 1); // Remove existing entry
+      }
+      // Create the new chat entry
+      const chatUpdate = {
+        address: toAddress,
+        timestamp: currentTime,
+        txid: response.txid,
+      };
+      // Find insertion point to maintain timestamp order (newest first)
+      insertSorted(myData.chats, chatUpdate, 'timestamp');
+      // --- End Update myData.chats ---
+
+      // Update the chat modal to show the newly sent transfer message
+      // Check if the chat modal for this recipient is currently active
+      const inActiveChatWithRecipient = chatModal.address === toAddress && chatModal.isActive();
+
+      if (inActiveChatWithRecipient) {
+        chatModal.appendChatModal(); // Re-render the chat modal and highlight the new item
+      }
+
+      sendAssetFormModal.close();
+      this.close();
+      sendAssetFormModal.usernameInput.value = '';
+      sendAssetFormModal.amountInput.value = '';
+      sendAssetFormModal.memoInput.value = '';
+      sendAssetFormModal.usernameAvailable.style.display = 'none';
+
+      // Show history modal after successful transaction
+      historyModal.open();
+      /*
+          const sendToAddressError = document.getElementById('sendToAddressError');
+          if (sendToAddressError) {
+              sendToAddressError.style.display = 'none';
+          }
+  */
+    } catch (error) {
+      console.error('Transaction error:', error);
+      //showToast('Transaction failed. Please try again.', 0, 'error');
+      cancelButton.disabled = false;
     }
   }
 }
 
-const sendAssetFormModal = new SendAssetFormModal();
+const sendAssetConfirmModal = new SendAssetConfirmModal();
+
+class ReceiveModal {
+  constructor() {
+  }
+
+  load() {
+    this.modal = document.getElementById('receiveModal');
+    this.assetSelect = document.getElementById('receiveAsset');
+    this.amountInput = document.getElementById('receiveAmount');
+    this.memoInput = document.getElementById('receiveMemo');
+    this.displayAddress = document.getElementById('displayAddress');
+    this.qrcodeContainer = document.getElementById('qrcode');
+    this.previewElement = document.getElementById('qrDataPreview');
+    this.copyButton = document.getElementById('copyAddress');
+
+    // Create debounced function
+    this.debouncedUpdateQRCode = debounce(() => this.updateQRCode(), 300);
+
+    // Modal close
+    document.getElementById('closeReceiveModal').addEventListener('click', () => this.close());
+    
+    // Copy address
+    this.copyButton.addEventListener('click', () => this.copyAddress());
+    
+    // QR code updates
+    this.assetSelect.addEventListener('change', () => this.updateQRCode());
+    this.amountInput.addEventListener('input', () => this.amountInput.value = normalizeUnsignedFloat(this.amountInput.value));
+    this.amountInput.addEventListener('input', this.debouncedUpdateQRCode);
+    this.memoInput.addEventListener('input', this.debouncedUpdateQRCode);
+  }
+
+  open() {
+    this.modal.classList.add('active');
+
+    // Get wallet data
+    const walletData = myData.wallet;
+
+    // Populate assets dropdown
+    // Clear existing options
+    this.assetSelect.innerHTML = '';
+
+    // Check if wallet assets exist
+    if (walletData && walletData.assets && walletData.assets.length > 0) {
+      // Add options for each asset
+      walletData.assets.forEach((asset, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = `${asset.name} (${asset.symbol})`;
+        this.assetSelect.appendChild(option);
+      });
+      console.log(`Populated ${walletData.assets.length} assets in dropdown`);
+    } else {
+      // Add a default option if no assets
+      const option = document.createElement('option');
+      option.value = 0;
+      option.textContent = 'Liberdus (LIB)';
+      this.assetSelect.appendChild(option);
+      console.log('No wallet assets found, using default');
+    }
+
+    // Clear input fields
+    this.amountInput.value = '';
+    this.memoInput.value = '';
+
+    // Initial update for addresses based on the first asset
+    this.updateReceiveAddresses();
+  }
+
+  close() {
+    this.modal.classList.remove('active');
+  }
+
+  updateReceiveAddresses() {
+    // Update display address
+    this.updateDisplayAddress();
+  }
+
+  updateDisplayAddress() {
+    // Clear previous QR code
+    this.qrcodeContainer.innerHTML = '';
+
+    const address = myAccount.keys.address;
+    this.displayAddress.textContent = '0x' + address;
+
+    // Generate QR code with payment data
+    try {
+      this.updateQRCode();
+      console.log('QR code updated with payment data');
+    } catch (error) {
+      console.error('Error updating QR code:', error);
+
+      // Fallback to basic address QR code if there's an error
+      new QRCode(this.qrcodeContainer, {
+        text: '0x' + address,
+        width: 200,
+        height: 200,
+      });
+      console.log('Fallback to basic address QR code');
+    }
+  }
+
+  // Create QR payment data object based on form values
+  createQRPaymentData() {
+    // Get selected asset
+    const assetIndex = parseInt(this.assetSelect.value, 10) || 0;
+
+    // Default asset info in case we can't find the selected asset
+    let assetId = 'liberdus';
+    let symbol = 'LIB';
+
+    // Try to get the selected asset
+    try {
+      if (myData && myData.wallet && myData.wallet.assets && myData.wallet.assets.length > 0) {
+        const asset = myData.wallet.assets[assetIndex];
+        if (asset) {
+          assetId = asset.id || 'liberdus';
+          symbol = asset.symbol || 'LIB';
+          console.log(`Selected asset: ${asset.name} (${symbol})`);
+        } else {
+          console.log(`Asset not found at index ${assetIndex}, using defaults`);
+        }
+      } else {
+        console.warn('Wallet assets not available, using default asset');
+      }
+    } catch (error) {
+      console.error('Error accessing asset data:', error);
+    }
+
+    // Build payment data object
+    const paymentData = {
+      u: myAccount.username, // username
+      i: assetId, // assetId
+      s: symbol, // symbol
+    };
+
+    // Add optional fields if they have values
+    const amount = this.amountInput.value.trim();
+    if (amount) {
+      paymentData.a = amount;
+    }
+
+    const memo = this.memoInput.value.trim();
+    if (memo) {
+      paymentData.m = memo;
+    }
+
+    return paymentData;
+  }
+
+  // Update QR code with current payment data
+  updateQRCode() {
+    this.qrcodeContainer.innerHTML = '';
+    this.previewElement.style.display = 'none'; // Hide preview/error area initially
+    this.previewElement.innerHTML = ''; // Clear any previous error message
+
+    try {
+      // Get payment data
+      const paymentData = this.createQRPaymentData();
+      console.log('Created payment data:', JSON.stringify(paymentData, null, 2));
+
+      // Convert to JSON and encode as base64
+      const jsonData = JSON.stringify(paymentData);
+      const base64Data = bin2base64(utf82bin(jsonData));
+
+      // Create URI with liberdus:// prefix
+      const qrText = `liberdus://${base64Data}`;
+      console.log('QR code text length:', qrText.length);
+      console.log('QR code text (first 100 chars):', qrText.substring(0, 100) + (qrText.length > 100 ? '...' : ''));
+
+      const gifBytes = qr.encodeQR(qrText, 'gif', { scale: 4 });
+      // Convert the raw bytes to a base64 data URL
+      const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(gifBytes)));
+      const dataUrl = 'data:image/gif;base64,' + base64;
+      // Create an image element and set its source to the data URL
+      const img = document.createElement('img');
+      img.src = dataUrl;
+      img.width = 200;
+      img.height = 200;
+      // Add the image to the container
+      this.qrcodeContainer.appendChild(img);
+
+      return qrText;
+    } catch (error) {
+      console.error('Error in updateQRCode:', error);
+
+      this.qrcodeContainer.innerHTML = ''; // Clear the container before adding fallback QR
+
+      // Fallback to basic username QR code in liberdus:// format
+      try {
+        // Use short key 'u' for username
+        const fallbackData = { u: myAccount.username };
+        const fallbackJsonData = JSON.stringify(fallbackData);
+        const fallbackBase64Data = btoa(fallbackJsonData);
+        const fallbackQrText = `liberdus://${fallbackBase64Data}`;
+
+        const gifBytes = qr.encodeQR(fallbackQrText, 'gif', { scale: 4 });
+        // Convert the raw bytes to a base64 data URL
+        const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(gifBytes)));
+        const dataUrl = 'data:image/gif;base64,' + base64;
+        // Create an image element and set its source to the data URL
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.width = 200;
+        img.height = 200;
+        // Add the image to the container
+        this.qrcodeContainer.appendChild(img);
+
+        console.log('Fallback QR code generated with username URI');
+        console.error('Error generating full QR', error);
+
+        // Show error directly in the preview element
+        if (this.previewElement) {
+          this.previewElement.innerHTML = `<span style="color: red;">Error generating full QR</span><br> Generating QR with only username. <br> Username: ${myAccount.username}`;
+          this.previewElement.style.display = 'block'; // Make the error visible
+        }
+      } catch (fallbackError) {
+        console.error('Error generating fallback QR code:', fallbackError);
+        this.qrcodeContainer.innerHTML = '<p style="color: red; text-align: center;">Failed to generate QR code.</p>';
+      }
+    }
+  }
+
+  async copyAddress() {
+    const address = this.displayAddress.textContent;
+    try {
+      await navigator.clipboard.writeText(address);
+      this.copyButton.classList.add('success');
+      setTimeout(() => {
+        this.copyButton.classList.remove('success');
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }
+}
+
+// initialize the receive modal
+const receiveModal = new ReceiveModal();
+
+/**
+ * Failed Transaction Modal
+ * @class
+ * @description A modal for displaying failed transactions and handling the retry and delete actions
+ */
+class FailedTransactionModal {
+  /**
+   * Initialize the failed transaction modal
+   * @returns {void}
+   */
+  constructor() {
+    this.txid = '';
+    this.address = '';
+    this.memo = '';
+  }
+
+  /**
+   * Load the failed transaction modal
+   * Add event listeners to the modal
+   * @returns {void}
+   */
+  load() {
+    this.modal = document.getElementById('failedTransactionModal');
+    this.retryButton = this.modal.querySelector('.retry-button');
+    this.deleteButton = this.modal.querySelector('.delete-button');
+    this.headerCloseButton = document.getElementById('closeFailedTransactionModal');
+
+    this.retryButton.addEventListener('click', this.handleRetry.bind(this));
+    this.deleteButton.addEventListener('click', this.handleDelete.bind(this));
+    this.headerCloseButton.addEventListener('click', this.closeAndClearState.bind(this));
+    this.modal.addEventListener('click', this.handleBackDropClick.bind(this));
+  }
+
+  /**
+   * Open the failed transaction modal
+   * @param {string} txid - The transaction ID
+   * @param {Element} element - The element that triggered the failed transaction
+   * @returns {void}
+   */
+  open(txid, element) {
+    console.log('open', txid);
+  
+    // Get the address and memo from the original failed transfer element
+    const address = element?.dataset?.address || chatModal.address;
+    const memo =
+      element?.querySelector('.transaction-memo')?.textContent || element?.querySelector('.payment-memo')?.textContent;
+    //const assetID = element?.dataset?.assetID || ''; // TODO: need to add assetID to `myData.wallet.history` for when we have multiple assets
+  
+    // Store the address and memo in properties of open
+    this.address = address;
+    this.memo = memo;
+    this.txid = txid;
+    //open.assetID = assetID;
+  
+    console.log(`this.address: ${this.address}`);
+    console.log(`this.memo: ${this.memo}`);
+    console.log(`this.txid: ${this.txid}`);
+    //console.log(`open.assetID: ${open.assetID}`)
+    this.modal.classList.add('active');
+  }
+
+  /**
+   * Close the failed transaction modal
+   * @returns {void}
+   */
+  close() {
+    this.modal.classList.remove('active');
+  }
+
+  /**
+   * Close the failed transaction modal and clear the state
+   * @returns {void}
+   */
+  closeAndClearState() {
+    this.close();
+    // Clear the stored values when modal is closed
+    this.txid = '';
+    this.address = '';
+    this.memo = '';
+    //this.assetID = '';
+  }
+  
+  /**
+   * Invoked when the user clicks the retry button in the failed payment modal
+   * It will fill the sendAssetFormModal with the payment content and txid of the failed payment in a hidden input field in the sendAssetFormModal
+   * @returns {void}
+   */
+  handleRetry() {
+    const retryOfPaymentTxId = sendAssetFormModal.retryTxIdInput;
+  
+    // close the failed payment modal
+    this.close();
+  
+    if (sendAssetFormModal.modal && retryOfPaymentTxId) {
+      sendAssetFormModal.open();
+  
+      // 1. fill in hidden retryOfPaymentTxId input
+      retryOfPaymentTxId.value = this.txid;
+  
+      // 2. fill in the memo input
+      sendAssetFormModal.memoInput.value = this.memo || '';
+  
+      // 3. fill in the to address input
+      // find username in myData.contacts[this.address].senderInfo.username
+      // enter as an input to invoke the oninput event
+      sendAssetFormModal.usernameInput.value =
+        myData.contacts[this.address]?.senderInfo?.username || this.address || '';
+      sendAssetFormModal.usernameInput.dispatchEvent(new Event('input', { bubbles: true }));
+  
+      // 4. fill in the amount input
+      // get the amount from myData.wallet.history since we need to the bigint value
+      const amount = myData.wallet.history.find((tx) => tx.txid === this.txid)?.amount;
+      // convert bigint to string
+      const amountStr = big2str(amount, 18);
+      sendAssetFormModal.amountInput.value = amountStr;
+    }
+  }
+  
+  /**
+   * Handle the delete button click
+   * @returns {void}
+   */
+  handleDelete() {
+    const originalTxid = this.txid;
+  
+    if (typeof originalTxid === 'string' && originalTxid) {
+      const currentAddress = this.address;
+      removeFailedTx(originalTxid, currentAddress);
+  
+      // refresh current view
+      chatModal.refreshCurrentView(this.txid);
+  
+      this.closeAndClearState();
+      //this.assetID = '';
+    } else {
+      console.error('Error deleting message: TXID not found.');
+      this.close();
+    }
+  }
+  
+  /**
+   * Handle the backdrop click
+   * @param {Event} event - The event object
+   * @returns {void}
+   */
+  handleBackDropClick(event) {
+    if (event.target === this.modal) {
+      this.closeAndClearState();
+    }
+  }
+}
+
+const failedTransactionModal = new FailedTransactionModal();
 
 /**
  * Remove failed transaction from the contacts messages, pending, and wallet history
@@ -8966,10 +9300,7 @@ async function checkPendingTransactions() {
       //console.log(`DEBUG: txid ${txid} endpointPath: ${endpointPath}`);
       const res = await queryNetwork(endpointPath);
       //console.log(`DEBUG: txid ${txid} res: ${JSON.stringify(res)}`);
-      if (
-        submittedts < thirtySecondsAgo &&
-        (res.transaction === null || Object.keys(res.transaction).length === 0)
-      ) {
+      if (submittedts < thirtySecondsAgo && (res.transaction === null || Object.keys(res.transaction).length === 0)) {
         console.error(`DEBUG: txid ${txid} timed out, removing completely`);
         // remove the pending tx from the pending array
         myData.pending.splice(i, 1);
@@ -8991,9 +9322,7 @@ async function checkPendingTransactions() {
           const index = myData.wallet.history.findIndex((tx) => tx.txid === txid);
           if (index !== -1) {
             // covert amount to wei
-            myData.wallet.history[index].amount = parse(
-              stringify(res.transaction.additionalInfo.totalUnstakeAmount)
-            );
+            myData.wallet.history[index].amount = parse(stringify(res.transaction.additionalInfo.totalUnstakeAmount));
           } else {
             console.log(`DEBUG: txid ${txid} not found in wallet history`);
           }
@@ -9001,13 +9330,9 @@ async function checkPendingTransactions() {
 
         if (type === 'deposit_stake' || type === 'withdraw_stake') {
           // show toast notification with the success message
-          showToast(
-            `${type === 'deposit_stake' ? 'Stake' : 'Unstake'} transaction successful`,
-            5000,
-            'success'
-          );
+          showToast(`${type === 'deposit_stake' ? 'Stake' : 'Unstake'} transaction successful`, 5000, 'success');
           // refresh only if validator modal is open
-          if (document.getElementById('validatorModal').classList.contains('active')) {
+          if (validatorStakingModal.isActive()) {
             validatorStakingModal.close();
             validatorStakingModal.open();
           }
@@ -9042,7 +9367,16 @@ async function checkPendingTransactions() {
             showToast(`Unstake failed: ${failureReason}`, 0, 'error');
           } else if (type === 'deposit_stake') {
             showToast(`Stake failed: ${failureReason}`, 0, 'error');
-          } else if (type === 'toll') {
+          } else if (type === 'message') {
+            if (chatModal.isActive()) {
+              await chatModal.reopen();
+            }
+          } else if (type === 'transfer') {
+            if (sendAssetFormModal.isActive()) {
+              await sendAssetFormModal.reopen();
+            }
+          }
+          else if (type === 'toll') {
             showToast(
               `Toll submission failed! Reverting to old toll: ${tollModal.oldToll}. Failure reason: ${failureReason}. `,
               0,
@@ -9051,17 +9385,13 @@ async function checkPendingTransactions() {
             // revert the local myData.settings.toll to the old value
             tollModal.editMyDataToll(tollModal.oldToll);
             // check if the toll modal is open
-            if (tollModal.modal.classList.contains('active')) {
+            if (tollModal.isActive()) {
               // change the tollAmountLIB and tollAmountUSD to the old value
               tollModal.tollAmountLIB = tollModal.oldToll;
               tollModal.tollAmountUSD = tollModal.oldToll;
             }
           } else if (type === 'update_toll_required') {
-            showToast(
-              `Update contact status failed: ${failureReason}. Reverting contact to old status.`,
-              0,
-              'error'
-            );
+            showToast(`Update contact status failed: ${failureReason}. Reverting contact to old status.`, 0, 'error');
             // revert the local myData.contacts[toAddress].friend to the old value
             myData.contacts[pendingTxInfo.to].friend = pendingTxInfo.friend;
           } else if (type === 'read') {
@@ -9087,7 +9417,7 @@ async function checkPendingTransactions() {
           // remove from wallet history
           myData.wallet.history = myData.wallet.history.filter((tx) => tx.txid !== txid);
 
-          if (document.getElementById('validatorModal').classList.contains('active')) {
+          if (validatorStakingModal.isActive()) {
             // refresh the validator modal
             validatorStakingModal.close();
             validatorStakingModal.open();
@@ -9098,8 +9428,10 @@ async function checkPendingTransactions() {
       }
     }
   }
-  // update wallet balances
-  updateWalletBalances();
+  // if createAccountModal is open, skip balance change
+  if (!createAccountModal.isActive()) {
+    walletScreen.updateWalletBalances();
+  }
 }
 
 /**
@@ -9159,21 +9491,6 @@ const pendingPromiseService = (() => {
   return { register, resolve, reject };
 })();
 
-function handleTogglePrivateKeyInput() {
-  const privateKeySection = document.getElementById('privateKeySection');
-  const newPrivateKeyInput = document.getElementById('newPrivateKey');
-  const togglePrivateKeyInput = document.getElementById('togglePrivateKeyInput');
-
-  // clear the newPrivateKeyInput
-  newPrivateKeyInput.value = '';
-
-  if (togglePrivateKeyInput.checked) {
-    privateKeySection.style.display = 'block';
-  } else {
-    privateKeySection.style.display = 'none';
-  }
-}
-
 /*
  * Used to prevent tab from working.
  * @param {Event} e - The event object.
@@ -9210,9 +9527,7 @@ async function getNetworkParams() {
     return;
   }
 
-  console.log(
-    `getNetworkParams: Data for account ${NETWORK_ACCOUNT_ID} is stale or missing. Attempting to fetch...`
-  );
+  console.log(`getNetworkParams: Data for account ${NETWORK_ACCOUNT_ID} is stale or missing. Attempting to fetch...`);
   try {
     const fetchedData = await queryNetwork(`/account/${NETWORK_ACCOUNT_ID}`);
 
@@ -9235,27 +9550,147 @@ async function getNetworkParams() {
 }
 getNetworkParams.timestamp = 0;
 
-function filterUsernameInput(e) {
-  const input = e.target;
-  const filteredValue = input.value.replace(/[^a-zA-Z0-9]/g, '');
-  if (input.value !== filteredValue) {
-    input.value = filteredValue;
+async function getSystemNotice() {
+  try {
+    // First, do a HEAD request to check if the file exists and get its timestamp
+    const headResponse = await fetch(`./notice.html?${Math.random()}`, { method: 'HEAD' });
+    if (!headResponse.ok) {
+      return;
+    }
+
+    // Get the Last-Modified header timestamp
+    const lastModified = headResponse.headers.get('Last-Modified');
+    const fileTimestamp = lastModified ? new Date(lastModified).getTime() : null;
+    
+    // Check if we need to show the notice based on file modification time
+    // If no Last-Modified header, we'll check the content timestamp instead
+    if (fileTimestamp && myData.settings.noticets && myData.settings.noticets >= fileTimestamp) {
+      return; // File hasn't changed, no need to download
+    }
+
+    // Download the file content
+    const response = await fetch(`./notice.html?${Math.random()}`);
+    if (!response.ok) {
+      return;
+    }
+
+    const text = await response.text();
+    const lines = text.split('\n');
+
+    if (lines.length < 2) {
+      return;
+    }
+
+    const timestamp = parseInt(lines[0]);
+    if (isNaN(timestamp)) {
+      console.warn('Invalid timestamp in notice file');
+      return;
+    }
+
+    // Check if we need to show the notice
+    if (!myData.settings.noticets || myData.settings.noticets < timestamp) {
+      // Join remaining lines for the notice message
+      const noticeMessage = lines.slice(1).join('\n').trim();
+      if (noticeMessage) {
+        showToast(noticeMessage, 0, 'error');
+        // Update the timestamp in settings
+        myData.settings.noticets = timestamp;
+      }
+    }
+  } catch (error) {
+    console.error('Error processing system notice:', error);
   }
 }
 
-function handlePaste(e) {
-  e.preventDefault(); // Prevent the default paste
-  const pastedText = (e.clipboardData || window.clipboardData).getData('text');
-  const filteredText = pastedText.replace(/[^a-zA-Z0-9]/g, '');
-  const input = e.target;
+function cleanSenderInfo(si) {
+  const csi = {};
+  if (si.username) {
+    csi.username = normalizeUsername(si.username)
+  }
+  if (si.name) {
+    csi.name = normalizeName(si.name)
+  }
+  if (si.phone) {
+    csi.phone = normalizePhone(si.phone)
+  }
+  if (si.email) {
+    csi.email = normalizeEmail(si.email)
+  }
+  if (si.linkedin) {
+    csi.linkedin = normalizeLinkedinUsername(si.linkedin)
+  }
+  if (si.x) {
+    csi.x = normalizeXTwitterUsername(si.x)
+  }
+  return csi;
+}
 
-  // Get the current cursor position
-  const start = input.selectionStart;
-  const end = input.selectionEnd;
+function longPoll() {
+  const myAccount = myData?.account;
+  // Skip if no valid account
+  if (!myAccount?.keys?.address) {
+    console.log('Poll skipped: No valid account');
+    return;
+  }
 
-  // Insert the filtered text at cursor position
-  input.value = input.value.substring(0, start) + filteredText + input.value.substring(end);
+  try {
+    longPoll.start = getCorrectedTimestamp();
+    const timestamp = myAccount.chatTimestamp || 0;
+    const random = Math.floor(Math.random()*1000000);
+    // call this with a promise that'll resolve with callback longPollResult function with the data
+    const longPollPromise = queryNetwork(`/collector/api/poll?account=${longAddress(myAccount.keys.address)}&chatTimestamp=${timestamp}`);
+    console.log(`longPoll started with account=${longAddress(myAccount.keys.address)} chatTimestamp=${timestamp}`);
+    // if there's an issue, reject the promise
+    longPollPromise.catch(error => {
+      console.error('Chat polling error:', error);
+      // reject the promise
+      longPollPromise.reject(error);
+    });
 
-  // Set cursor position after the pasted text
-  input.setSelectionRange(start + filteredText.length, start + filteredText.length);
+    // if the promise is resolved, call the longPollResult function with the data
+    longPollPromise.then(data => longPollResult(data));
+  } catch (error) {
+    console.error('Chat polling error:', error);
+  }
+}
+longPoll.start = 0;
+
+async function longPollResult(data) {
+  console.log('longpoll data', data)
+  // calculate the time since the last poll
+  let nextPoll = 4000 - (getCorrectedTimestamp() - longPoll.start)
+  if (nextPoll < 0) {
+    nextPoll = 0;
+  }
+  // schedule the next poll
+  setTimeout(longPoll, nextPoll + 1000);
+  if (data?.success){
+    try {
+      const gotChats = await chatsScreen.updateChatData();
+      if (gotChats > 0) {
+        await chatsScreen.updateChatList();
+      }
+    } catch (error) {
+      console.error('Chat polling error:', error);
+    }
+  }
+}
+
+function getContactDisplayName(contact) {
+  return contact?.name || 
+         contact?.username || 
+         `${contact?.address?.slice(0, 8)}...${contact?.address?.slice(-6)}`;
+}
+
+function isMobile() {
+  return /Android|webOS|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+function enterFullscreen() {
+  if (isMobile()) {
+  console.log('in enterFullscreen');
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen();
+    } 
+  }
 }
